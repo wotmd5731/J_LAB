@@ -15,6 +15,9 @@ import os
 import csv
 import matplotlib.pyplot as plt
 
+import pandas as pd
+
+
 def data_preprocess(dir_path):
     dir_list = os.listdir(dir_path)
     total_data = []
@@ -62,8 +65,41 @@ def data_pre_pro_walk(dir_path, key):
 #sdata = sorted(data, key=lambda x: time.mktime(time.strptime(x[1],"%Y-%m-%d")))
 
 
-sdata = data_pre_pro_walk('2017data','FAX')
 
+
+def data_pre_pro_walk_pandas(dir_path, key):
+    total_data = []
+    for (paths, dirs, files) in os.walk(dir_path):
+        for fs in files:
+            if fs == 'prices.csv':
+#                print(paths,fs)
+                with open(paths+'/'+fs,'r') as file:
+                    rdr = csv.reader(file)
+#                    [total_data.append(d) for d in rdr if key in d[0]]
+                    for da in [d for d in rdr if key in d[0]]:
+                        da.extend([parser.parse(da[1]).weekday()])
+                        total_data.append(da)
+#                        print(da)
+                    
+    np_sdata = np.array(total_data)
+    #np_sdata[:,1] is means the date
+    # following command applies unique to the date!
+    # unique  is  always sorted
+    uni_np, indic = np.unique(np_sdata[:,1],return_index=True)
+    udata = np_sdata[indic]
+
+    dates = pd.DatetimeIndex(udata[:,1])
+    uni_data = np.delete(udata, 1,1)
+    uni_data = np.delete(uni_data, 0,1)
+    uni_data = np.float64(uni_data)
+
+    labels = ['open','high','low','close','volume','adj_close','week']
+    df = pd.DataFrame(uni_data, index=dates,columns=labels)
+    return df
+
+
+if __name__=='__main__':
+    sdata = data_pre_pro_walk_pandas('2017data','FAX')
 
 
 
