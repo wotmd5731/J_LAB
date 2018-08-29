@@ -12,7 +12,7 @@ def draw_chart(df):
     df.low.plot(legend=True)
     df.volume.plot(secondary_y=True,legend=True)
 
-if __name__='__main__':
+if __name__=='__main__':
     from preprocess import data_pre_pro_walk_pandas
     df = data_pre_pro_walk_pandas('2017data','FAX')
     draw_chart(df)

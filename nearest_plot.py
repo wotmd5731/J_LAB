@@ -1,12 +1,12 @@
 import numpy as np
-import matplot.pyplot as plt
+import matplotlib.pyplot as plt
 
 fig,ax = plt.subplots(1,4,figsize=(10,5))
 
 def nearest_plot(XX):
     global fig,ax
     for i,X in enumerate(XX):
-        ax[i].imshow(x,interpolation='nearest')
+        ax[i].imshow(X,interpolation='nearest')
         numrows,numcols=X.shape
 
         def format_coord(x,y):
