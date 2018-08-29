@@ -24,7 +24,7 @@ def nearest_plot(XX):
 
 if __name__=='__main__':
     np.random.seed(1000)
-    X=[10*np.random.rand(5,3) for i in range(4) ]
+    X=[10*np.random.rand(10,5) for i in range(4) ]
     nearest_plot(X)
 
 
