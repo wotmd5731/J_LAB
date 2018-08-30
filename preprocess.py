@@ -98,8 +98,29 @@ def data_pre_pro_walk_pandas(dir_path, key):
     return df
 
 
+
+
+def data_pre_pro_walk_pandas_multikey(dir_path, key_list):
+    
+    total_data = pd.DataFrame()
+
+    for (paths, dirs, files) in os.walk(dir_path):
+        for fs in files:
+            if fs == 'prices.csv':
+                with open(paths+'/'+fs,'r') as file:
+                    try:
+                        df = pd.read_csv(file)
+                        for key in key_list:
+                            aa = df[df.symbol.str.contains(key)]
+                            total_data=total_data.append(aa,ignore_index=True)
+                        except:
+                            pass
+    df = total_data.set_index('date').sort_index().drop_duplicates(keep='last')
+    return df
+
+
 if __name__=='__main__':
-    sdata = data_pre_pro_walk_pandas('2017data','FAX')
+    sdata = data_pre_pro_walk_pandas_multikey('2017data',['FAX','Z'])
 
 
 
