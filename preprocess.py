@@ -113,8 +113,8 @@ def data_pre_pro_walk_pandas_multikey(dir_path, key_list):
                         for key in key_list:
                             aa = df[df.symbol==key]
                             total_data=total_data.append(aa,ignore_index=True)
-                        except:
-                            pass
+                    except:
+                        pass
     df = total_data.set_index('date').sort_index().drop_duplicates(keep='last')
     return df
 
