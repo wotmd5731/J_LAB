@@ -9,6 +9,7 @@ class stock_env():
 
     def __init__(self,datapath,name_list,main_name):
         self.df = data_pre_pro_walk_pandas_multikey(datapath,name_list)
+        self.last_date = self.df.iloc[-1].name
         self.used_buy = False
         self.start_date = '2017-01-03'
         self.today_date = self.start_date 
