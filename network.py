@@ -15,6 +15,8 @@ from torch.optim import Adam
 import torch.nn.functional as F
 from collections import deque
 from torch.distributions import Dirichlet
+import random
+
 
 def fanin_init(size, fanin=None):
     fanin = fanin or size[0]
@@ -111,7 +113,8 @@ class Agent():
         self.nb_action = nb_action
         self.lr = 0.001
         
-        self.batch_size = 32
+        self.batch_size = 2
+        self.seq_size = 1
         self.tau = 0.1
         self.discount = 0.99
 
@@ -130,7 +133,8 @@ class Agent():
         
         hard_update(self.actor_target, self.actor)
         hard_update(self.critic_target, self.critic)
-        self.memory = deque(maxlen=10)
+        
+        self.epi_memory = deque(maxlen=10)
         self.random = Dirichlet(torch.ones([1,nb_action]))
         
         
@@ -147,8 +151,6 @@ class Agent():
         self.critic_target.train()
 
 
-    def preprocess(self,s_t):
-        return s_t
     
     def get_action(self, s_t, random = False ):
         if random:
@@ -165,9 +167,26 @@ class Agent():
         return action
     
     
-    def mem_append(self,obs):
-        
+    def mem_append(self,episodic_info):
+        self.epi_memory.append(episodic_info)
         pass
+    
+    def mem_sample(self):
+        
+        batch_size = self.batch_size
+        batch_data = random.sample(self.epi_memory,batch_size)
+        seq_size = self.seq_size
+        
+        batch_seq = []
+        for data in batch_data:
+            subseq = []
+            start = random.randint(0,len(data)-seq_size-1)
+            for se in range(seq_size):
+                subseq.append(data[start+se])
+            batch_seq.append(subseq)
+        
+        return batch_seq
+    
     
     def load_model(self, output):
         if output is None: return
@@ -193,13 +212,25 @@ class Agent():
             '{}/critic.pkl'.format(output)
         )
     
-#    
-#    def update_policy(self):
-#        # Sample batch
-#        state_batch, action_batch, reward_batch, \
-#        next_state_batch, terminal_batch = self.memory.sample_and_split(self.batch_size)
-#
-#        # Prepare for the target q batch
+    
+    
+    def update_policy(self):
+        # Sample batch
+        batch_info = np.array(self.mem_sample())
+        # state pre process
+        batch_s_t = batch_info[:,:,0]
+        
+        
+        batch_a_t = batch_info[:,:,1]
+        batch_r_t = batch_info[:,:,2]
+        batch_s_t_1 = batch_info[:,:,3]
+        batch_done = batch_info[:,:,4]
+        
+        
+        # Prepare for the target q batch
+        next_q = self.critic_target(batch_s_t_1, self.actor_target(batch_s_t_1) )
+        
+        
 #        next_q_values = self.critic_target([
 #            to_tensor(next_state_batch, volatile=True),
 #            self.actor_target(to_tensor(next_state_batch, volatile=True)),
@@ -233,8 +264,8 @@ class Agent():
 #        # Target update
 #        soft_update(self.actor_target, self.actor, self.tau)
 #        soft_update(self.critic_target, self.critic, self.tau)
-#
-#    
+
+    
     
 def _test_():
     #actor critic 테스트
@@ -261,35 +292,39 @@ def _test2_():
 
 
 
+
+
 agent = Agent(nb_states=4,nb_action=2)
 
 import gym
-
 env = gym.make('CartPole-v1')
 global_count = 0
 episode = 0
-while episode < 10:
+while episode < 7:
     episode += 1
     T=0
+    mem = []
     s_t = env.reset()
 #    args.epsilon -= 0.8/args.max_episode_length
-    while T < 200:
+    while T < 100:
         T += 1
         a_t = agent.get_action(s_t,random=True)
         s_t_1 , r_t , done, _ = env.step(a_t)
-        env.render()
-#        if args.reward_clip > 0:
-#            reward = max(min(reward, args.reward_clip), -args.reward_clip)  # Clip rewards
- 
-#        agent.mem_append([state, action, reward, next_state, done])
+#        env.render()
+        mem.append([s_t, a_t, r_t, s_t_1, done])
+        
         s_t = s_t_1
+#        agent.update_policy()
+#        agent.target_update()
         
 #        if global_count % args.replay_interval == 0 :
 #            agent.basic_learn(memory)
 #        if global_count % args.target_update_interval == 0 :
 #            agent.target_dqn_update()
-            
-            
-        if done :
+
+        if done or T>10 :
+            agent.mem_append(mem)
             break
 env.close()
+
+agent.update_policy()
