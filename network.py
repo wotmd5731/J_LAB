@@ -57,10 +57,6 @@ class Actor(baseclass):
         self.net[2].weight.data.uniform_(-init_w, init_w)
         
         # add bn initialize context
-        self.bn[0].weight.data.unifrom_()
-        self.bn[0].bian.zero_()
-        self.bn[1].weight.data.unifrom_()
-        self.bn[1].bian.zero_()
 
 
     
@@ -82,11 +78,11 @@ class Critic(baseclass):
         super(Critic, self).__init__()
         self.net = nn.ModuleList()
         self.net.append(nn.Linear(netsize[0], netsize[1]))
-        self.net.append(nn.Linear(netsize[1]+nb_action, netsize[2]))
+        self.net.append(nn.Linear(netsize[1]+1, netsize[2]))
         self.net.append(nn.Linear(netsize[2], netsize[3]))
         
         self.bn = nn.ModuleList()
-        self.bn.append(nn.BatchNorm1d(netsize[1]+nb_action))
+        self.bn.append(nn.BatchNorm1d(netsize[1]))
         self.bn.append(nn.BatchNorm1d(netsize[2]))
         
         self.init_weights()
@@ -97,16 +93,12 @@ class Critic(baseclass):
         self.net[2].weight.data.uniform_(-init_w, init_w)
     
         # add bn initialize context
-        self.bn[0].weight.data.unifrom_()
-        self.bn[0].bian.zero_()
-        self.bn[1].weight.data.unifrom_()
-        self.bn[1].bian.zero_()
     
     def forward(self, x, action):
         x = self.net[0](x)
         x = self.bn[0](x)
         x = F.leaky_relu(x)
-
+        action = action.type(torch.float32)
         out = torch.cat([x,action],1)
         out = self.net[1](out)
         out = self.bn[1](out)
@@ -171,7 +163,10 @@ class Agent():
         self.critic.train()
         self.critic_target.train()
 
-
+    def get_q_value(self,s_t ,a_t):
+        q = self.critic(s_t,a_t)
+        return q
+    
     
     def get_action(self, s_t, random = False ):
         if random:
@@ -179,10 +174,10 @@ class Agent():
             self.a_t = action
             return action
         
-        out = self.actor(self.preprocess(s_t))
+        out = self.actor(s_t)
         tau = 0.8
         action = (1-tau)*out + (tau)*self.random.rsample()
-        action = action.max(1)[1].item()
+        action = action.max(1)[1].unsqueeze(1)
                
         self.a_t = action
         return action
@@ -306,13 +301,16 @@ def _test_():
 def _test2_():
     #랜덤 action 테스트
     ag = Agent(nb_states=5,nb_action=5)
-    state = torch.rand([1,5])
-    arr = [ag.get_action(state) for x in range(1000)]
-    nparr = np.array(arr)
-    print(np.unique(nparr,return_counts=True))
+    state = torch.rand([3,5])
+    ag.get_q_value(state,ag.get_action(state))
+    
+#    arr = [ag.get_action(state) for x in range(1000)]
+#    nparr = np.array(arr)
+#    print(np.unique(nparr,return_counts=True))
+    
 
 
-
+_test2_()
 
 
 agent = Agent(nb_states=4,nb_action=2)
