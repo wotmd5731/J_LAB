@@ -14,7 +14,8 @@ from torch.optim import Adam
 
 import torch.nn.functional as F
 from collections import deque
-from torch.distributions import Dirichlet
+from torch.distributions import Dirichlet, Normal, kl_divergence, Categorical
+
 import random
 
 
@@ -54,13 +55,24 @@ class Actor(baseclass):
         self.net[0].weight.data = fanin_init(self.net[0].weight.data.size())
         self.net[1].weight.data = fanin_init(self.net[1].weight.data.size())
         self.net[2].weight.data.uniform_(-init_w, init_w)
-    
+        
+        # add bn initialize context
+        self.bn[0].weight.data.unifrom_()
+        self.bn[0].bian.zero_()
+        self.bn[1].weight.data.unifrom_()
+        self.bn[1].bian.zero_()
+
+
     
     def forward(self, x):
         x = self.net[0](x)
+        x = self.bn[0](x)
         x = F.leaky_relu(x)
+
         x = self.net[1](x)
+        x = self.bn[1](x)
         x = F.leaky_relu(x)
+
         x = self.net[2](x)
         x = F.tanh(x)
         return x
@@ -84,13 +96,22 @@ class Critic(baseclass):
         self.net[1].weight.data = fanin_init(self.net[1].weight.data.size())
         self.net[2].weight.data.uniform_(-init_w, init_w)
     
+        # add bn initialize context
+        self.bn[0].weight.data.unifrom_()
+        self.bn[0].bian.zero_()
+        self.bn[1].weight.data.unifrom_()
+        self.bn[1].bian.zero_()
     
     def forward(self, x, action):
         x = self.net[0](x)
+        x = self.bn[0](x)
         x = F.leaky_relu(x)
+
         out = torch.cat([x,action],1)
         out = self.net[1](out)
+        out = self.bn[1](out)
         out = F.leaky_relu(out)
+
         out = self.net[2](out)
         return out
 
