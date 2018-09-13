@@ -88,7 +88,8 @@ class Actor(baseclass):
 #        x = self.bn[1](x) if EN_Batchnorm else x
         x = F.leaky_relu(x)
         x = self.net[2](x)
-        x = F.tanh(x)
+        x = F.sigmoid(x)
+#        x = F.tanh(x)
         return x
         
 class Critic(baseclass):
@@ -143,7 +144,8 @@ def hard_update(target, source):
 
 
 class Agent():
-    def __init__(self,nb_states,nb_action, mem_size):
+    def __init__(self,nb_states,nb_action, mem_size, dev):
+        self.dev = dev
         self.nb_states = nb_states
         self.nb_action = nb_action
         self.lr = 0.001
@@ -160,12 +162,12 @@ class Agent():
 
         hidden_size = 128
         
-        self.actor = Actor([nb_states,hidden_size,hidden_size,nb_action])
-        self.actor_target = Actor([nb_states,hidden_size,hidden_size,nb_action])
+        self.actor = Actor([nb_states,hidden_size,hidden_size,nb_action]).to(dev)
+        self.actor_target = Actor([nb_states,hidden_size,hidden_size,nb_action]).to(dev)
         self.actor_optim = torch.optim.Adam(self.actor.parameters(),lr=self.lr)
         
-        self.critic = Critic([nb_states,hidden_size,hidden_size,1],nb_action)
-        self.critic_target = Critic([nb_states,hidden_size,hidden_size,1],nb_action)
+        self.critic = Critic([nb_states,hidden_size,hidden_size,1],nb_action).to(dev)
+        self.critic_target = Critic([nb_states,hidden_size,hidden_size,1],nb_action).to(dev)
         self.critic_optim = torch.optim.Adam(self.critic.parameters(),lr=self.lr)
         
         hard_update(self.actor_target, self.actor)
@@ -331,46 +333,51 @@ def _test2_():
 
 
 
-buf_fill=500
-agent = Agent(nb_states=4,nb_action=2,mem_size=10000)
+dev = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+
+    
+    
+
+buf_fill=100
+agent = Agent(nb_states=4,nb_action=2,mem_size=10000,dev=dev)
 agent.train()
 env = env_torch()
 eps = 0.5
 ite = 0
-try:
-    for episode in range(100000):
-        mem = []
-        s_t = env.reset()
-        for T in range(201):
-            a_t = agent.get_action(s_t,eps=eps)
-            a_t2 = F.softmax(a_t,1)
-            acc = np.random.choice(2,p=a_t2[0].detach().numpy())
-                
-            s_t_1, r_t,done,_=env.step(acc)
-            mem.append([s_t,a_t,r_t,s_t_1,done])
-            s_t = s_t_1
-            if episode > 40000:
-                eps = 0.01
-            elif episode > 20000:
-                eps = 0.1
-            elif episode > 10000:
-                eps = 0.3
-            
-            if T%10 ==0 and episode>buf_fill and eps>0.001:
-                v_loss, p_loss = agent.update_policy()
-    #            eps = eps-0.00001 if eps>0 else 0 
-                print("v: {:.4f}   p: {:.4f}  eps: {}".format(v_loss,p_loss, eps))
-                writer.add_scalar('v_loss',v_loss,ite)
-                writer.add_scalar('p_loss',p_loss,ite)
-                ite+=1
-    
-            if not done or T>=200:
-                print('episode ',episode, 'max T',T)
-                writer.add_scalar('maxstep/episode',T,episode)
-                agent.mem_append(mem)
-                break
-except:
-    env.close()
-    writer.close()
-    agent.save_model('back')
-    print('except')
+#try:
+for episode in range(100000):
+    mem = []
+    s_t = env.reset()
+    for T in range(201):
+        a_t = agent.get_action(s_t,eps=eps)
+        
+        cate = Categorical(a_t)
+        a_t_sample = cate.sample()
+        s_t_1, r_t,done,_=env.step(a_t_sample.item())
+        mem.append([s_t,a_t,r_t,s_t_1,done])
+        s_t = s_t_1
+        if episode > 40000:
+            eps = 0.01
+        elif episode > 20000:
+            eps = 0.1
+        elif episode > 10000:
+            eps = 0.3
+        
+        if T%10 ==0 and episode>buf_fill and eps>0.001:
+            v_loss, p_loss = agent.update_policy()
+#            eps = eps-0.00001 if eps>0 else 0 
+            print("v: {:.4f}   p: {:.4f}  eps: {}".format(v_loss,p_loss, eps))
+            writer.add_scalar('v_loss',v_loss,ite)
+            writer.add_scalar('p_loss',p_loss,ite)
+            ite+=1
+
+        if not done or T>=200:
+            print('episode ',episode, 'max T',T)
+            writer.add_scalar('maxstep/episode',T,episode)
+            agent.mem_append(mem)
+            break
+#except:
+env.close()
+writer.close()
+agent.save_model('back')
+print('except')
