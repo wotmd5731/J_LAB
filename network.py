@@ -56,18 +56,18 @@ class baseclass(nn.Module):
 class Actor(baseclass):
     def __init__(self,netsize):
         super(Actor,self).__init__()
-#        self.net = nn.ModuleList()
-#        self.net.append(nn.Linear(netsize[0], netsize[1]))
-#        self.net.append(nn.Linear(netsize[1], netsize[2]))
-#        self.net.append(nn.Linear(netsize[2], netsize[3]))
+        self.net = nn.ModuleList()
+        self.net.append(nn.Linear(netsize[0], netsize[1]))
+        self.net.append(nn.Linear(netsize[1], netsize[2]))
+        self.net.append(nn.Linear(netsize[2], netsize[3]))
         
-        self.fc1=nn.Linear(netsize[0], netsize[1])
-        self.fc2=nn.Linear(netsize[1], netsize[2])
-        self.fc3=nn.Linear(netsize[2], netsize[3])
+#        self.fc1=nn.Linear(netsize[0], netsize[1])
+#        self.fc2=nn.Linear(netsize[1], netsize[2])
+#        self.fc3=nn.Linear(netsize[2], netsize[3])
         
-#        self.bn = nn.ModuleList()
-#        self.bn.append(nn.BatchNorm1d(netsize[1]))
-#        self.bn.append(nn.BatchNorm1d(netsize[2]))
+        self.bn = nn.ModuleList()
+        self.bn.append(nn.BatchNorm1d(netsize[1]))
+        self.bn.append(nn.BatchNorm1d(netsize[2]))
         
 #        self.init_weights()
         
@@ -81,34 +81,31 @@ class Actor(baseclass):
 
     
     def forward(self, x, EN_Batchnorm = False):
-        x = self.fc1(x)
-#        x = self.net[0](x)
+        x = self.net[0](x)
 #        x = self.bn[0](x) if EN_Batchnorm else x
         x = F.leaky_relu(x)
-        x = self.fc2(x)
-#        x = self.net[1](x)
+        x = self.net[1](x)
 #        x = self.bn[1](x) if EN_Batchnorm else x
         x = F.leaky_relu(x)
-        x = self.fc3(x)
-#        x = self.net[2](x)
+        x = self.net[2](x)
         x = F.tanh(x)
         return x
         
 class Critic(baseclass):
     def __init__(self, netsize,nb_action):
         super(Critic, self).__init__()
-#        self.net = nn.ModuleList()
-#        self.net.append(nn.Linear(netsize[0], netsize[1]))
-#        self.net.append(nn.Linear(netsize[1]+nb_action, netsize[2]))
-#        self.net.append(nn.Linear(netsize[2], netsize[3]))
+        self.net = nn.ModuleList()
+        self.net.append(nn.Linear(netsize[0], netsize[1]))
+        self.net.append(nn.Linear(netsize[1]+nb_action, netsize[2]))
+        self.net.append(nn.Linear(netsize[2], netsize[3]))
 #        
-        self.fc1=nn.Linear(netsize[0], netsize[1])
-        self.fc2=nn.Linear(netsize[1]+nb_action, netsize[2])
-        self.fc3=nn.Linear(netsize[2], netsize[3])
+#        self.fc1=nn.Linear(netsize[0], netsize[1])
+#        self.fc2=nn.Linear(netsize[1]+nb_action, netsize[2])
+#        self.fc3=nn.Linear(netsize[2], netsize[3])
         
-#        self.bn = nn.ModuleList()
-#        self.bn.append(nn.BatchNorm1d(netsize[1]))
-#        self.bn.append(nn.BatchNorm1d(netsize[2]))
+        self.bn = nn.ModuleList()
+        self.bn.append(nn.BatchNorm1d(netsize[1]))
+        self.bn.append(nn.BatchNorm1d(netsize[2]))
         
 #        self.init_weights()
         
@@ -120,19 +117,16 @@ class Critic(baseclass):
         # add bn initialize context
     
     def forward(self, x, action, EN_Batchnorm = False):
-        x = self.fc1(x)
-#        x = self.net[0](x)
+        x = self.net[0](x)
 #        x = self.bn[0](x) if EN_Batchnorm else x
         x = F.leaky_relu(x)
 #        action = action.type(torch.float32)
         
         x = torch.cat([x,action],1)
-        x = self.fc2(x)
-#        out = self.net[1](out)
-#        out = self.bn[1](out) if EN_Batchnorm else x 
+        x = self.net[1](x)
+#        x = self.bn[1](x) if EN_Batchnorm else x 
         x = F.leaky_relu(x)
-        x = self.fc3(x)
-#        out = self.net[2](out)
+        x = self.net[2](x)
         return x
 
     
@@ -152,25 +146,26 @@ class Agent():
     def __init__(self,nb_states,nb_action, mem_size):
         self.nb_states = nb_states
         self.nb_action = nb_action
-        self.lr = 1
+        self.lr = 0.001
         
-        self.batch_size =4
+        self.batch_size =64
         self.seq_size = 1
 
-        self.tau = 0.7
+        self.tau = 0.3
         self.discount = 0.99
 
         self.epsilon = 1.0
         self.s_t = None # Most recent state
         self.a_t = None # Most recent action
 
+        hidden_size = 128
         
-        self.actor = Actor([nb_states,8,8,nb_action])
-        self.actor_target = Actor([nb_states,8,8,nb_action])
+        self.actor = Actor([nb_states,hidden_size,hidden_size,nb_action])
+        self.actor_target = Actor([nb_states,hidden_size,hidden_size,nb_action])
         self.actor_optim = torch.optim.Adam(self.actor.parameters(),lr=self.lr)
         
-        self.critic = Critic([nb_states,8,8,1],nb_action)
-        self.critic_target = Critic([nb_states,8,8,1],nb_action)
+        self.critic = Critic([nb_states,hidden_size,hidden_size,1],nb_action)
+        self.critic_target = Critic([nb_states,hidden_size,hidden_size,1],nb_action)
         self.critic_optim = torch.optim.Adam(self.critic.parameters(),lr=self.lr)
         
         hard_update(self.actor_target, self.actor)
@@ -179,8 +174,7 @@ class Agent():
         self.epi_memory = deque(maxlen=mem_size)
         self.random = Dirichlet(torch.ones([1,nb_action]))
         
-        self.vloss_fn = nn.MSELoss()
-
+        self.v_loss= nn.MSELoss()
 
         
     def eval(self):
@@ -289,18 +283,13 @@ class Agent():
             next_q = self.critic_target(b_st,self.actor_target(b_st_1))
             target_q_batch = b_rt + self.discount * b_done * next_q
 
-        torch.enable_grad()
         
         self.critic.zero_grad()
         q_batch = self.critic(b_st,b_at)
-        value_loss = self.vloss_fn(q_batch,target_q_batch)
-        value_loss.backward()
+        value_loss = self.v_loss(q_batch,target_q_batch)
+        value_loss.backward(retain_graph=True)
 #        torch.nn.utils.clip_grad_norm_(self.critic.parameters(),0.5)
-        bef = self.critic.fc1.weight.data
         self.critic_optim.step()
-        aft = self.critic.fc1.weight.data
-        
-        print(bef-aft)
         
         self.actor.zero_grad()
         policy_loss = -self.critic(b_st,self.actor(b_st)).mean()
@@ -342,38 +331,46 @@ def _test2_():
 
 
 
-buf_fill=100
+buf_fill=500
 agent = Agent(nb_states=4,nb_action=2,mem_size=10000)
 agent.train()
 env = env_torch()
-eps = 0.2
+eps = 0.5
 ite = 0
-
-for episode in range(100000):
-    mem = []
-    s_t = env.reset()
-    for T in range(201):
-        a_t = agent.get_action(s_t,eps=eps)
-        a_t2 = F.softmax(a_t,1)
-        acc = np.random.choice(2,p=a_t2[0].detach().numpy())
+try:
+    for episode in range(100000):
+        mem = []
+        s_t = env.reset()
+        for T in range(201):
+            a_t = agent.get_action(s_t,eps=eps)
+            a_t2 = F.softmax(a_t,1)
+            acc = np.random.choice(2,p=a_t2[0].detach().numpy())
+                
+            s_t_1, r_t,done,_=env.step(acc)
+            mem.append([s_t,a_t,r_t,s_t_1,done])
+            s_t = s_t_1
+            if episode > 40000:
+                eps = 0.01
+            elif episode > 20000:
+                eps = 0.1
+            elif episode > 10000:
+                eps = 0.3
             
-        s_t_1, r_t,done,_=env.step(acc)
-        mem.append([s_t,a_t,r_t,s_t_1,done])
-        s_t = s_t_1
-
-        if T%10 ==0 and episode>buf_fill and eps>0.001:
-            v_loss, p_loss = agent.update_policy()
-#            eps = eps-0.00001 if eps>0 else 0 
-            print("v: {:.4f}   p: {:.4f}  eps: {}".format(v_loss,p_loss, eps))
-            writer.add_scalar('v_loss',v_loss,ite)
-            writer.add_scalar('p_loss',p_loss,ite)
-            ite+=1
-
-        if not done or T>=200:
-            print('episode ',episode, 'max T',T)
-            writer.add_scalar('maxstep/episode',T,episode)
-            agent.mem_append(mem)
-            break
-
-env.close()
-writer.close()
+            if T%10 ==0 and episode>buf_fill and eps>0.001:
+                v_loss, p_loss = agent.update_policy()
+    #            eps = eps-0.00001 if eps>0 else 0 
+                print("v: {:.4f}   p: {:.4f}  eps: {}".format(v_loss,p_loss, eps))
+                writer.add_scalar('v_loss',v_loss,ite)
+                writer.add_scalar('p_loss',p_loss,ite)
+                ite+=1
+    
+            if not done or T>=200:
+                print('episode ',episode, 'max T',T)
+                writer.add_scalar('maxstep/episode',T,episode)
+                agent.mem_append(mem)
+                break
+except:
+    env.close()
+    writer.close()
+    agent.save_model('back')
+    print('except')
