@@ -88,7 +88,8 @@ class Actor(baseclass):
 #        x = self.bn[1](x) if EN_Batchnorm else x
         x = F.leaky_relu(x)
         x = self.net[2](x)
-        x = F.sigmoid(x)
+        x = torch.sigmoid(x)
+#        x = F.sigmoid(x)
 #        x = F.tanh(x)
         return x
         
@@ -201,10 +202,10 @@ class Agent():
             action = self.random.rsample()
             self.a_t = action
             return action
-        
-        out = self.actor(s_t)
-        epsilon = self.epsilon if eps is None else eps 
-        action = (1-epsilon)*out + (epsilon)*self.random.rsample()
+        with torch.no_grad():  
+            out = self.actor(s_t.to(self.dev)).cpu()
+            epsilon = self.epsilon if eps is None else eps 
+            action = (1-epsilon)*out + (epsilon)*self.random.rsample()
 #        action = action.max(1)[1].unsqueeze(1)
                
         self.a_t = action
@@ -260,6 +261,7 @@ class Agent():
     def update_policy(self):
         batch_size = self.batch_size
         seq_size = self.seq_size
+        dev = self.dev
         
         b_st,b_at,b_rt,b_st_1,b_done = [],[],[],[],[]
         b_info = self.mem_sample(batch_size,seq_size)
@@ -276,11 +278,11 @@ class Agent():
         #batch_shape = (batch_size,seq_size,-1)
 
 
-        b_st = torch.stack(b_st).reshape(batch_shape)
-        b_at = torch.stack(b_at).reshape(batch_shape)
-        b_rt = torch.Tensor(b_rt).reshape(batch_shape)
-        b_st_1 = torch.stack(b_st_1).reshape(batch_shape)
-        b_done = torch.Tensor(b_done).reshape(batch_shape)
+        b_st = torch.stack(b_st).reshape(batch_shape).to(dev)
+        b_at = torch.stack(b_at).reshape(batch_shape).to(dev)
+        b_rt = torch.Tensor(b_rt).reshape(batch_shape).to(dev)
+        b_st_1 = torch.stack(b_st_1).reshape(batch_shape).to(dev)
+        b_done = torch.Tensor(b_done).reshape(batch_shape).to(dev)
         with torch.no_grad():
             next_q = self.critic_target(b_st,self.actor_target(b_st_1))
             target_q_batch = b_rt + self.discount * b_done * next_q
@@ -329,13 +331,16 @@ def _test2_():
 #    arr = [ag.get_action(state) for x in range(1000)]
 #    nparr = np.array(arr)
 #    print(np.unique(nparr,return_counts=True))
-    
+
+import time
+start_time = time.time()
+
 
 
 
 dev = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
-    
+ 
     
 
 buf_fill=100
@@ -344,40 +349,41 @@ agent.train()
 env = env_torch()
 eps = 0.5
 ite = 0
-#try:
-for episode in range(100000):
-    mem = []
-    s_t = env.reset()
-    for T in range(201):
-        a_t = agent.get_action(s_t,eps=eps)
-        
-        cate = Categorical(a_t)
-        a_t_sample = cate.sample()
-        s_t_1, r_t,done,_=env.step(a_t_sample.item())
-        mem.append([s_t,a_t,r_t,s_t_1,done])
-        s_t = s_t_1
-        if episode > 40000:
-            eps = 0.01
-        elif episode > 20000:
-            eps = 0.1
-        elif episode > 10000:
-            eps = 0.3
-        
-        if T%10 ==0 and episode>buf_fill and eps>0.001:
-            v_loss, p_loss = agent.update_policy()
-#            eps = eps-0.00001 if eps>0 else 0 
-            print("v: {:.4f}   p: {:.4f}  eps: {}".format(v_loss,p_loss, eps))
-            writer.add_scalar('v_loss',v_loss,ite)
-            writer.add_scalar('p_loss',p_loss,ite)
-            ite+=1
-
-        if not done or T>=200:
-            print('episode ',episode, 'max T',T)
-            writer.add_scalar('maxstep/episode',T,episode)
-            agent.mem_append(mem)
-            break
-#except:
-env.close()
-writer.close()
-agent.save_model('back')
-print('except')
+try:
+    for episode in range(100000):
+        mem = []
+        s_t = env.reset()
+        for T in range(201):
+            a_t = agent.get_action(s_t,eps=eps)
+            
+            cate = Categorical(a_t)
+            a_t_sample = cate.sample()
+            s_t_1, r_t,done,_=env.step(a_t_sample.item())
+            mem.append([s_t,a_t,r_t,s_t_1,done])
+            s_t = s_t_1
+            if episode > 40000:
+                eps = 0.01
+            elif episode > 20000:
+                eps = 0.1
+            elif episode > 10000:
+                eps = 0.3
+            
+            if T%10 ==0 and episode>buf_fill and eps>0.001:
+                v_loss, p_loss = agent.update_policy()
+    #            eps = eps-0.00001 if eps>0 else 0 
+                print("v: {:.4f}   p: {:.4f}  eps: {}".format(v_loss,p_loss, eps))
+                writer.add_scalar('v_loss',v_loss,ite)
+                writer.add_scalar('p_loss',p_loss,ite)
+                ite+=1
+    
+            if not done or T>=200:
+                print('episode:{}  maxT:{}  {.2f}sec'.format(episode,T,time.time()-start_time))
+                writer.add_scalar('maxstep/episode',T,episode)
+                agent.mem_append(mem)
+                break
+except Exception as e :
+    print(e)
+    env.close()
+    writer.close()
+    agent.save_model('back')
+    print('except')
