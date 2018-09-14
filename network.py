@@ -287,18 +287,21 @@ class Agent():
             next_q = self.critic_target(b_st,self.actor_target(b_st_1))
             target_q_batch = b_rt + self.discount * b_done * next_q
 
-        
-        self.critic.zero_grad()
+        self.critic_optim.zero_grad()
+#        self.critic.zero_grad()
         q_batch = self.critic(b_st,b_at)
         value_loss = self.v_loss(q_batch,target_q_batch)
         value_loss.backward(retain_graph=True)
-#        torch.nn.utils.clip_grad_norm_(self.critic.parameters(),0.5)
+        torch.nn.utils.clip_grad_norm_(self.critic.parameters(),1)
         self.critic_optim.step()
         
-        self.actor.zero_grad()
+#        self.actor.zero_grad()
+#        self.critic.zero_grad()
+        self.actor_optim.zero_grad()
+        
         policy_loss = -self.critic(b_st,self.actor(b_st)).mean()
         policy_loss.backward()
-#        torch.nn.utils.clip_grad_norm_(self.actor.parameters(),0.5)
+        torch.nn.utils.clip_grad_norm_(self.actor.parameters(),1)
         self.actor_optim.step()
 
         soft_update(self.actor_target,self.actor,self.tau)
@@ -347,7 +350,7 @@ buf_fill=100
 agent = Agent(nb_states=4,nb_action=2,mem_size=10000,dev=dev)
 agent.train()
 env = env_torch()
-eps = 0.5
+eps = 0.2
 ite = 0
 try:
     for episode in range(100000):
@@ -372,12 +375,11 @@ try:
                 v_loss, p_loss = agent.update_policy()
     #            eps = eps-0.00001 if eps>0 else 0 
                 print("v: {:.4f}   p: {:.4f}  eps: {}".format(v_loss,p_loss, eps))
-                writer.add_scalar('v_loss',v_loss,ite)
-                writer.add_scalar('p_loss',p_loss,ite)
+                writer.add_scalars('loss',{'v_loss':v_loss,'p_loss':p_loss},ite)
                 ite+=1
     
             if not done or T>=200:
-                print('episode:{}  maxT:{}  {.2f}sec'.format(episode,T,time.time()-start_time))
+                print('episode:{}  maxT:{}  {:.2f}sec'.format(episode,T,time.time()-start_time))
                 writer.add_scalar('maxstep/episode',T,episode)
                 agent.mem_append(mem)
                 break
