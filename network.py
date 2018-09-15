@@ -14,7 +14,7 @@ from torch.optim import Adam
 
 import torch.nn.functional as F
 from collections import deque
-from torch.distributions import Dirichlet, Normal, kl_divergence, Categorical
+from torch.distributions import Dirichlet, Normal, kl_divergence, Categorical, Uniform
 
 from tensorboardX import SummaryWriter
 writer = SummaryWriter('runs')
@@ -23,7 +23,8 @@ import random
 import gym
 class env_torch():
     def __init__(self):
-        self.env=gym.make('CartPole-v1')
+#        self.env=gym.make('CartPole-v1')
+        self.env=gym.make('Pendulum-v0')
     def reset(self):
         return torch.from_numpy(self.env.reset()).type(torch.float32)
     def step(self,action):
@@ -32,6 +33,8 @@ class env_torch():
         return s_t,r_t,not done,_
     def close(self):
         self.env.close()
+
+
 
 
 
@@ -149,33 +152,36 @@ class Agent():
         self.dev = dev
         self.nb_states = nb_states
         self.nb_action = nb_action
-        self.lr = 0.001
+        self.value_lr = 0.001
+        self.policy_lr = 0.0001
         
         self.batch_size =64
         self.seq_size = 1
 
-        self.tau = 0.3
+        self.tau = 0.001
         self.discount = 0.99
 
         self.epsilon = 1.0
         self.s_t = None # Most recent state
         self.a_t = None # Most recent action
 
-        hidden_size = 128
+        hidden_size = 200
         
         self.actor = Actor([nb_states,hidden_size,hidden_size,nb_action]).to(dev)
         self.actor_target = Actor([nb_states,hidden_size,hidden_size,nb_action]).to(dev)
-        self.actor_optim = torch.optim.Adam(self.actor.parameters(),lr=self.lr)
+        self.actor_optim = torch.optim.Adam(self.actor.parameters(),lr=self.policy_lr)
         
         self.critic = Critic([nb_states,hidden_size,hidden_size,1],nb_action).to(dev)
         self.critic_target = Critic([nb_states,hidden_size,hidden_size,1],nb_action).to(dev)
-        self.critic_optim = torch.optim.Adam(self.critic.parameters(),lr=self.lr)
+        self.critic_optim = torch.optim.Adam(self.critic.parameters(),lr=self.value_lr)
         
         hard_update(self.actor_target, self.actor)
         hard_update(self.critic_target, self.critic)
         
         self.epi_memory = deque(maxlen=mem_size)
-        self.random = Dirichlet(torch.ones([1,nb_action]))
+#        self.random = Dirichlet(torch.ones([1,nb_action]))
+        
+        self.random = Uniform(torch.tensor([-2.0]), torch.tensor([2.0]))
         
         self.v_loss= nn.MSELoss()
 
@@ -208,6 +214,9 @@ class Agent():
             action = (1-epsilon)*out + (epsilon)*self.random.rsample()
 #        action = action.max(1)[1].unsqueeze(1)
                
+        
+        action = max(min(action,2),-2)
+            
         self.a_t = action
         return action
     
@@ -284,24 +293,26 @@ class Agent():
         b_st_1 = torch.stack(b_st_1).reshape(batch_shape).to(dev)
         b_done = torch.Tensor(b_done).reshape(batch_shape).to(dev)
         with torch.no_grad():
-            next_q = self.critic_target(b_st,self.actor_target(b_st_1))
+            next_q = self.critic_target(b_st_1,self.actor_target(b_st_1))
             target_q_batch = b_rt + self.discount * b_done * next_q
 
+
+        self.actor.zero_grad()
+        self.critic.zero_grad()
         self.critic_optim.zero_grad()
-#        self.critic.zero_grad()
         q_batch = self.critic(b_st,b_at)
         value_loss = self.v_loss(q_batch,target_q_batch)
-        value_loss.backward(retain_graph=True)
-        torch.nn.utils.clip_grad_norm_(self.critic.parameters(),1)
+        value_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.critic.parameters(),0.1)
         self.critic_optim.step()
         
-#        self.actor.zero_grad()
-#        self.critic.zero_grad()
+        self.actor.zero_grad()
+        self.critic.zero_grad()
         self.actor_optim.zero_grad()
         
         policy_loss = -self.critic(b_st,self.actor(b_st)).mean()
         policy_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.actor.parameters(),1)
+        torch.nn.utils.clip_grad_norm_(self.actor.parameters(),0.1)
         self.actor_optim.step()
 
         soft_update(self.actor_target,self.actor,self.tau)
@@ -344,31 +355,35 @@ start_time = time.time()
 dev = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
  
-    
 
-buf_fill=100
-agent = Agent(nb_states=4,nb_action=2,mem_size=10000,dev=dev)
+
+buf_fill=200
+agent = Agent(nb_states=3,nb_action=1,mem_size=10000,dev=dev)
 agent.train()
 env = env_torch()
-eps = 0.2
+eps = 0.3
 ite = 0
 try:
     for episode in range(100000):
         mem = []
         s_t = env.reset()
+        total_reward =0
         for T in range(201):
             a_t = agent.get_action(s_t,eps=eps)
             
-            cate = Categorical(a_t)
-            a_t_sample = cate.sample()
-            s_t_1, r_t,done,_=env.step(a_t_sample.item())
+#            print(a_t)
+#            cate = Categorical(a_t)
+#            a_t_sample = cate.sample()
+            
+            s_t_1, r_t,done,_=env.step([a_t.item()])
             mem.append([s_t,a_t,r_t,s_t_1,done])
+            total_reward += r_t.item()
             s_t = s_t_1
-            if episode > 40000:
+            if episode > 12000:
                 eps = 0.01
-            elif episode > 20000:
+            elif episode > 9000:
                 eps = 0.1
-            elif episode > 10000:
+            elif episode > 3000:
                 eps = 0.3
             
             if T%10 ==0 and episode>buf_fill and eps>0.001:
@@ -379,8 +394,8 @@ try:
                 ite+=1
     
             if not done or T>=200:
-                print('episode:{}  maxT:{}  {:.2f}sec'.format(episode,T,time.time()-start_time))
-                writer.add_scalar('maxstep/episode',T,episode)
+                print('episode:{}  maxT:{} total_reward :{}  {:.2f}sec'.format(episode,T,total_reward,time.time()-start_time))
+                writer.add_scalar('maxstep/episode',total_reward,episode)
                 agent.mem_append(mem)
                 break
 except Exception as e :
