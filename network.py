@@ -17,16 +17,16 @@ from collections import deque
 from torch.distributions import Dirichlet, Normal, kl_divergence, Categorical, Uniform
 
 from tensorboardX import SummaryWriter
-writer = SummaryWriter('runs')
+writer = SummaryWriter('runs_pend')
 
 import random
 import gym
 class env_torch():
     def __init__(self):
-        self.env=gym.make('CartPole-v1')
-#        self.env=gym.make('Pendulum-v0')
-        self.obs_space = 4
-        self.act_space = 2
+#        self.env=gym.make('CartPole-v1')
+        self.env=gym.make('Pendulum-v0')
+        self.obs_space = 3
+        self.act_space = 1
 
     def reset(self):
         return torch.from_numpy(self.env.reset()).type(torch.float32)
@@ -155,20 +155,20 @@ class Agent():
         self.dev = dev
         self.nb_states = nb_states
         self.nb_action = nb_action
-        self.value_lr = 0.001
-        self.policy_lr = 0.0001
+        self.value_lr = 0.002
+        self.policy_lr = 0.0002
         
         self.batch_size =64
         self.seq_size = 1
 
-        self.tau = 0.001
+        self.tau = 0.002
         self.discount = 0.99
 
         self.epsilon = 1.0
         self.s_t = None # Most recent state
         self.a_t = None # Most recent action
 
-        hidden_size = 200
+        hidden_size = 256
         
         self.actor = Actor([nb_states,hidden_size,hidden_size,nb_action]).to(dev)
         self.actor_target = Actor([nb_states,hidden_size,hidden_size,nb_action]).to(dev)
@@ -183,7 +183,6 @@ class Agent():
         
         self.epi_memory = deque(maxlen=mem_size)
 #        self.random = Dirichlet(torch.ones([1,nb_action]))
-        
         self.random = Uniform(torch.tensor([-2.0]), torch.tensor([2.0]))
         
         self.v_loss= nn.MSELoss()
@@ -240,7 +239,6 @@ class Agent():
 #                subseq.append(data[start+se])
 #            batch_seq.append(subseq)
             batch_seq.append(data[start:start+seq_size])
-            )
         
         return batch_seq
     
@@ -326,31 +324,6 @@ class Agent():
         return value_loss.item() , policy_loss.item()
 
         
-    
-def _test_():
-    #actor critic 테스트
-    nb_states = 5
-    nb_action = 3
-    xx = torch.rand([1,nb_states])
-    action = torch.rand([1,nb_action])
-    
-    ac = Actor([nb_states,3,3,3])
-    print(ac(xx))
-    #ac.print_weights()
-    #ac.print_bias()
-    
-    cr = Critic([nb_states,3,3,1],nb_action)
-    print(cr(xx,action))
-    
-def _test2_():
-    #랜덤 action 테스트
-    ag = Agent(nb_states=5,nb_action=5)
-    state = torch.rand([3,5])
-    ag.get_q_value(state,ag.get_action(state))
-    
-#    arr = [ag.get_action(state) for x in range(1000)]
-#    nparr = np.array(arr)
-#    print(np.unique(nparr,return_counts=True))
 
 import time
 import sys
@@ -380,17 +353,17 @@ if __name__ == '__main__':
             mem = []
             s_t = env.reset()
             total_reward =0
-            eps = 1 if testset else 0.3
+            eps = 0 if testset else 0.3
             for T in range(201):
                 a_t = agent.get_action(s_t,eps=eps)
                 
-    #            print(a_t)
-    #            cate = Categorical(a_t)
-    #            a_t_sample = cate.sample()
+#                cate = Categorical(a_t)
+#                a_t_sample = cate.sample().item()
+                a_t_sample = [a_t.item()]
                 
-                s_t_1, r_t,done,_=env.step([a_t.item()])
+                s_t_1, r_t,done,_=env.step(a_t_sample)
                 mem.append([s_t,a_t,r_t,s_t_1,done])
-                total_reward += r_t.item()
+                total_reward += r_t
                 s_t = s_t_1
 #                if episode > 12000:
 #                    eps = 0.01
@@ -407,8 +380,7 @@ if __name__ == '__main__':
                     ite+=1
         
                 if not done or T>=200:
-                    print('\r episode:{}  maxT:{} total_reward :{}  {:.2f}sec'\
-                            .format(episode,T,total_reward,time.time()-start_time),end='\r',flush=True))
+                    print('\r episode:{}  maxT:{} total_reward :{}  {:.2f}sec'.format(episode,T,total_reward,time.time()-start_time),end='\r',flush=True)
                     if testset:
                         writer.add_scalar('test reward',total_reward,episode)
                     else :
