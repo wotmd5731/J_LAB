@@ -231,11 +231,13 @@ class Agent():
         
         batch_seq = []
         for data in batch_data:
-            subseq = []
+#            subseq = []
             start = random.randint(0,len(data)-seq_size)
-            for se in range(seq_size):
-                subseq.append(data[start+se])
-            batch_seq.append(subseq)
+#            for se in range(seq_size):
+#                subseq.append(data[start+se])
+#            batch_seq.append(subseq)
+            batch_seq.append(data[start:start+seq_size])
+            )
         
         return batch_seq
     
@@ -347,60 +349,71 @@ def _test2_():
 #    print(np.unique(nparr,return_counts=True))
 
 import time
-start_time = time.time()
+import sys
+
 
 
 
 
 dev = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
- 
+if __name__ == '__main__': 
+    if dev.type == 'cpu':
+        sys.exit()
 
-
-buf_fill=200
-agent = Agent(nb_states=3,nb_action=1,mem_size=10000,dev=dev)
-agent.train()
-env = env_torch()
-eps = 0.3
-ite = 0
-try:
-    for episode in range(100000):
-        mem = []
-        s_t = env.reset()
-        total_reward =0
-        for T in range(201):
-            a_t = agent.get_action(s_t,eps=eps)
-            
-#            print(a_t)
-#            cate = Categorical(a_t)
-#            a_t_sample = cate.sample()
-            
-            s_t_1, r_t,done,_=env.step([a_t.item()])
-            mem.append([s_t,a_t,r_t,s_t_1,done])
-            total_reward += r_t.item()
-            s_t = s_t_1
-            if episode > 12000:
-                eps = 0.01
-            elif episode > 9000:
-                eps = 0.1
-            elif episode > 3000:
-                eps = 0.3
-            
-            if T%10 ==0 and episode>buf_fill and eps>0.001:
-                v_loss, p_loss = agent.update_policy()
-    #            eps = eps-0.00001 if eps>0 else 0 
-                print("v: {:.4f}   p: {:.4f}  eps: {}".format(v_loss,p_loss, eps))
-                writer.add_scalars('loss',{'v_loss':v_loss,'p_loss':p_loss},ite)
-                ite+=1
     
-            if not done or T>=200:
-                print('episode:{}  maxT:{} total_reward :{}  {:.2f}sec'.format(episode,T,total_reward,time.time()-start_time))
-                writer.add_scalar('maxstep/episode',total_reward,episode)
-                agent.mem_append(mem)
-                break
-except Exception as e :
-    print(e)
-    env.close()
-    writer.close()
-    agent.save_model('back')
-    print('except')
+    buf_fill=200
+    agent = Agent(nb_states=3,nb_action=1,mem_size=10000,dev=dev)
+    agent.train()
+    env = env_torch()
+    eps = 0.3
+    ite = 0
+    try:
+        for episode in range(100000):
+            testset = True if (episode%100)<5 else False
+
+            start_time = time.time()
+            mem = []
+            s_t = env.reset()
+            total_reward =0
+            eps = 1 if testset else 0.3
+            for T in range(201):
+                a_t = agent.get_action(s_t,eps=eps)
+                
+    #            print(a_t)
+    #            cate = Categorical(a_t)
+    #            a_t_sample = cate.sample()
+                
+                s_t_1, r_t,done,_=env.step([a_t.item()])
+                mem.append([s_t,a_t,r_t,s_t_1,done])
+                total_reward += r_t.item()
+                s_t = s_t_1
+#                if episode > 12000:
+#                    eps = 0.01
+#                elif episode > 9000:
+#                    eps = 0.1
+#                elif episode > 3000:
+#                    eps = 0.3
+                
+                if T%10 ==0 and episode>buf_fill and eps>0.001:
+                    v_loss, p_loss = agent.update_policy()
+        #            eps = eps-0.00001 if eps>0 else 0 
+                    print("v: {:.4f}   p: {:.4f}  eps: {}".format(v_loss,p_loss, eps))
+                    writer.add_scalars('loss',{'v_loss':v_loss,'p_loss':p_loss},ite)
+                    ite+=1
+        
+                if not done or T>=200:
+                    print('\r episode:{}  maxT:{} total_reward :{}  {:.2f}sec'\
+                            .format(episode,T,total_reward,time.time()-start_time),end='\r',flush=True))
+                    if testset:
+                        writer.add_scalar('test reward',total_reward,episode)
+                    else :
+                        writer.add_scalar('train reward',total_reward,episode)
+                    agent.mem_append(mem)
+                    break
+    except Exception as e :
+        print(e)
+        env.close()
+        writer.close()
+        agent.save_model('back')
+        print('except')
