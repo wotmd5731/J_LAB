@@ -23,8 +23,11 @@ import random
 import gym
 class env_torch():
     def __init__(self):
-#        self.env=gym.make('CartPole-v1')
-        self.env=gym.make('Pendulum-v0')
+        self.env=gym.make('CartPole-v1')
+#        self.env=gym.make('Pendulum-v0')
+        self.obs_space = 4
+        self.act_space = 2
+
     def reset(self):
         return torch.from_numpy(self.env.reset()).type(torch.float32)
     def step(self,action):
@@ -85,10 +88,10 @@ class Actor(baseclass):
     
     def forward(self, x, EN_Batchnorm = False):
         x = self.net[0](x)
-#        x = self.bn[0](x) if EN_Batchnorm else x
+        x = self.bn[0](x) if EN_Batchnorm else x
         x = F.leaky_relu(x)
         x = self.net[1](x)
-#        x = self.bn[1](x) if EN_Batchnorm else x
+        x = self.bn[1](x) if EN_Batchnorm else x
         x = F.leaky_relu(x)
         x = self.net[2](x)
         x = torch.sigmoid(x)
@@ -123,13 +126,13 @@ class Critic(baseclass):
     
     def forward(self, x, action, EN_Batchnorm = False):
         x = self.net[0](x)
-#        x = self.bn[0](x) if EN_Batchnorm else x
+        x = self.bn[0](x) if EN_Batchnorm else x
         x = F.leaky_relu(x)
 #        action = action.type(torch.float32)
         
         x = torch.cat([x,action],1)
         x = self.net[1](x)
-#        x = self.bn[1](x) if EN_Batchnorm else x 
+        x = self.bn[1](x) if EN_Batchnorm else x 
         x = F.leaky_relu(x)
         x = self.net[2](x)
         return x
@@ -273,7 +276,8 @@ class Agent():
         batch_size = self.batch_size
         seq_size = self.seq_size
         dev = self.dev
-        
+        EN_BN = False 
+
         b_st,b_at,b_rt,b_st_1,b_done = [],[],[],[],[]
         b_info = self.mem_sample(batch_size,seq_size)
 
@@ -295,14 +299,14 @@ class Agent():
         b_st_1 = torch.stack(b_st_1).reshape(batch_shape).to(dev)
         b_done = torch.Tensor(b_done).reshape(batch_shape).to(dev)
         with torch.no_grad():
-            next_q = self.critic_target(b_st_1,self.actor_target(b_st_1))
+            next_q = self.critic_target(b_st_1,self.actor_target(b_st_1,EN_Batchnorm=EN_BN),EN_Batchnorm=EN_BN)
             target_q_batch = b_rt + self.discount * b_done * next_q
 
 
         self.actor.zero_grad()
         self.critic.zero_grad()
         self.critic_optim.zero_grad()
-        q_batch = self.critic(b_st,b_at)
+        q_batch = self.critic(b_st,b_at,EN_Batchnorm=EN_BN)
         value_loss = self.v_loss(q_batch,target_q_batch)
         value_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.critic.parameters(),0.1)
@@ -312,7 +316,7 @@ class Agent():
         self.critic.zero_grad()
         self.actor_optim.zero_grad()
         
-        policy_loss = -self.critic(b_st,self.actor(b_st)).mean()
+        policy_loss = -self.critic(b_st,self.actor(b_st,EN_Batchnorm=EN_BN),EN_Batchnorm=EN_BN).mean()
         policy_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.actor.parameters(),0.1)
         self.actor_optim.step()
@@ -362,10 +366,10 @@ if __name__ == '__main__':
         sys.exit()
 
     
-    buf_fill=200
-    agent = Agent(nb_states=3,nb_action=1,mem_size=10000,dev=dev)
-    agent.train()
     env = env_torch()
+    buf_fill=200
+    agent = Agent(nb_states=env.obs_space,nb_action=env.act_space,mem_size=10000,dev=dev)
+    agent.train()
     eps = 0.3
     ite = 0
     try:
@@ -398,7 +402,7 @@ if __name__ == '__main__':
                 if T%10 ==0 and episode>buf_fill and eps>0.001:
                     v_loss, p_loss = agent.update_policy()
         #            eps = eps-0.00001 if eps>0 else 0 
-                    print("v: {:.4f}   p: {:.4f}  eps: {}".format(v_loss,p_loss, eps))
+#                    print("v: {:.4f}   p: {:.4f}  eps: {}".format(v_loss,p_loss, eps))
                     writer.add_scalars('loss',{'v_loss':v_loss,'p_loss':p_loss},ite)
                     ite+=1
         
