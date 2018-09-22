@@ -1,3 +1,0 @@
-symbol,end_date,amend,period_focus,fiscal_year,doc_type,revenues,op_income,net_income,eps_basic,eps_diluted,dividend,assets,cur_assets,cur_liab,cash,equity,cash_flow_op,cash_flow_inv,cash_flow_fin
-SKY,2016-11-30,False,Q2,2017,10-Q,64226000.0,-509000.0,-595000.0,-0.07,-0.07,0.0,57727000.0,38419000.0,20625000.0,8902000.0,25344000.0,2055000.0,-812000.0,
-VII,2016-09-30,False,FY,2016,10-K,35759651.0,-13488156.0,-12773984.0,-1.37,-1.37,0.0,18077709.0,15689161.0,6201020.0,1954422.0,8526914.0,-3730807.0,1312136.0,1755184.0

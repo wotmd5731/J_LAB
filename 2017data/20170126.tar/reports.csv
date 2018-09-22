@@ -1,3 +1,0 @@
-symbol,end_date,amend,period_focus,fiscal_year,doc_type,revenues,op_income,net_income,eps_basic,eps_diluted,dividend,assets,cur_assets,cur_liab,cash,equity,cash_flow_op,cash_flow_inv,cash_flow_fin
-CRVP,2016-10-31,False,FY,2016,10-K,65342904.0,3523191.0,1201830.0,0.06,0.06,0.0,37929529.0,16539854.0,8628766.0,5553815.0,5158360.0,8077037.0,-2587821.0,-3026872.0
-NG,2016-11-30,False,FY,2016,10-K,0.0,-30147000.0,-33846000.0,-0.11,-0.11,0.0,408261000.0,107338000.0,3051000.0,30274000.0,300263000.0,-11696000.0,268000.0,
