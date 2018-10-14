@@ -1,4 +1,24 @@
 
+import logging
+import os
+import settings
+import data_manager
+import pandas as pd
+import numpy as np
+
+import torch
+import torch.nn as nn
+from torch.optim import Adam
+
+import torch.nn.functional as F
+from collections import deque
+from torch.distributions import Dirichlet, Normal, kl_divergence, Categorical, Uniform
+
+from tensorboardX import SummaryWriter
+writer = SummaryWriter('runs_pend')
+
+import random
+import gym
 
 import visdom
 vis = visdom.Visdom()
@@ -8,6 +28,22 @@ class env_stock():
         stock_code = '005930'
         start_date = '2010-03-01'
         end_date = '2015-03-04'
+
+        chart_data = data_manager.load_chart_data(
+            os.path.join(settings.BASE_DIR,
+                         'data/chart_data/{}.csv'.format(stock_code)))
+        prep_data = data_manager.preprocess(chart_data)
+        training_data = data_manager.build_training_data(prep_data)
+        
+        # 기간 필터링
+        training_data = training_data[(training_data['date'] >= self.start_date) &
+                                      (training_data['date'] <= self.end_date)]
+        training_data = training_data.dropna()
+        
+        # 차트 데이터 분리
+        features_chart_data = ['date', 'open', 'high', 'low', 'close', 'volume']
+        chart_data = training_data[features_chart_data]
+
 
         chart_data['data']= pd.to_datetime(chart_data.date).astype(np.int64)/1000000
         data = torch.from_numpy(chart_data.values)
