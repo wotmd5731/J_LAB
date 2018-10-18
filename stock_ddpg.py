@@ -222,6 +222,8 @@ def ddpg_update(batch_size,
     value_loss.backward()
     value_optimizer.step()
 
+    
+
     for target_param, param in zip(target_value_net.parameters(), value_net.parameters()):
             target_param.data.copy_(
                 target_param.data * (1.0 - soft_tau) + param.data * soft_tau
@@ -246,14 +248,37 @@ import data_manager
 import pandas as pd
 import numpy as np            
 import random
+import datetime
 
+
+def random_date(start, end):
+    """Generate a random datetime between `start` and `end`"""
+    return start + datetime.timedelta(
+        # Get a random amount of seconds between `start` and `end`
+        seconds=random.randint(0, int((end - start).total_seconds())),
+    )
+    
 class env_stock():
     def __init__(self,init_money,quantize):
+        self.count_max= 200
         
-        stock_code = '005930'
-        self.start_date = '2010-03-01'
-        self.end_date = '2011-03-04'
+#        self.start_date = '2010-03-01'
+#        self.end_date = '2011-03-04'
 
+        self.win1= vis.line(Y=torch.Tensor([0]))
+        self.win2= vis.line(Y=torch.Tensor([0]))
+
+        
+        self.init_money = init_money
+        self.quantize = quantize
+        
+    def reset(self):
+        stock_code = '005930'
+        self.prev_action = 0
+        self.count = 0
+        self.pocket= self.init_money
+        self.sum_action = 0
+        
         chart_data = data_manager.load_chart_data(
             os.path.join(settings.BASE_DIR,
                          'data/chart_data/{}.csv'.format(stock_code)))
@@ -261,8 +286,12 @@ class env_stock():
         training_data = data_manager.build_training_data(prep_data)
         
         # 기간 필터링
-        training_data = training_data[(training_data['date'] >= self.start_date) &
-                                      (training_data['date'] <= self.end_date)]
+        start = random.randint(0,(len(training_data)-self.count_max-200))
+        
+        training_data = training_data[start:start+self.count_max+200]
+        
+#        training_data = training_data[(training_data['date'] >= self.start_date) &
+#                                      (training_data['date'] <= self.end_date)]
         training_data = training_data.dropna()
         
         # 차트 데이터 분리
@@ -277,15 +306,8 @@ class env_stock():
 
         self.data = self.data - self.data.mean(dim=0)
         self.data = self.data/self.data.std(0)
-
-        self.count_max= self.data.size(0)
-        self.init_money = init_money
-        self.quantize = quantize
         
-    def reset(self):
-        self.prev_action = 0
-        self.count = 0
-        self.pocket= self.init_money
+        
         return self.data[self.count].view(1,-1)
         pass
         
@@ -293,6 +315,8 @@ class env_stock():
     def step(self,action):
         #continuouse action space
         action = action.item()
+        self.sum_action += abs(self.prev_action - action)
+        
         a_t = round((self.prev_action - action)*self.quantize)
         r_t = d_t= 0
         
@@ -300,11 +324,12 @@ class env_stock():
         self.pocket += cost
         
         self.prev_action = action
-        r_t = cost
+        r_t = cost -self.sum_action
+#        r_t = cost
         if self.count+1 == self.count_max:
 #            self.pocket += self.data[self.count,1]*(self.prev_action*quantize)
             d_t = 1
-            r_t = self.pocket 
+#            r_t = self.pocket 
 
         else:
             self.count +=1
@@ -313,12 +338,10 @@ class env_stock():
         pass
     
     def vis(self):
-        vis.line(Y=self.data[:,1],name='price')
-        vis.line(Y=self.data[:,2],name='vol')
+        self.win1= vis.line(Y=self.data[:,1],win=self.win1,opts=dict(title='price'))
+        self.win2= vis.line(Y=self.data[:,2],win=self.win2,opts=dict(title='vol'))
         
 
-env = env_stock(0,100)
-env.reset()
 
 
 
@@ -329,10 +352,12 @@ env.reset()
 
 
 
+env = env_stock(0,100)
+env.reset()
 
 
 #env = NormalizedActions(gym.make("Pendulum-v0"))
-ou_noise = OUNoise(1)
+ou_noise = OUNoise(1,theta=0.1)
 
 state_dim  = 3
 action_dim = 1
@@ -357,6 +382,11 @@ policy_lr = 1e-5
 value_optimizer  = optim.Adam(value_net.parameters(),  lr=value_lr)
 policy_optimizer = optim.Adam(policy_net.parameters(), lr=policy_lr)
 
+
+clip = 1
+torch.nn.utils.clip_grad_norm(value_net.parameters(),clip)
+torch.nn.utils.clip_grad_norm(policy_net.parameters(),clip)
+
 value_criterion = nn.MSELoss()
 
 replay_buffer_size = 1000000
@@ -366,7 +396,7 @@ replay_buffer = ReplayBuffer(replay_buffer_size)
 # In[28]:
 
 
-max_frames  = 12000
+max_frames  = 120000
 max_steps   = env.count_max
 frame_idx   = 0
 rewards     = []
@@ -377,19 +407,22 @@ batch_size  = 128
 import visdom
 
 vis = visdom.Visdom()
-win_p = vis.line(Y=torch.Tensor([0]), name='ploss')
-win_v = vis.line(Y=torch.Tensor([0]), name='vloss')
-win_r = vis.line(Y=torch.Tensor([0]), name='reward')
-win_a = vis.line(Y=torch.Tensor([0]), name='action')
+win_p = vis.line(Y=torch.Tensor([0]),opts=dict(title='policy'))
+win_v = vis.line(Y=torch.Tensor([0]), opts=dict(title='value'))
+win_r = vis.line(Y=torch.Tensor([0]), opts=dict(title='reward'))
+win_a = vis.line(Y=torch.Tensor([0]), opts=dict(title='action'))
 
 print(max_steps)
-env.vis()
-traj = []
+
+
 
 while frame_idx < max_frames:
     state = env.reset()
+    env.vis()
+    
     ou_noise.reset()
     episode_reward = 0
+    traj = []
     
     for step in range(max_steps):
         action = policy_net.get_action(state)
@@ -398,7 +431,7 @@ while frame_idx < max_frames:
         next_state, reward, done, _ = env.step(action)
         
         replay_buffer.push(state, action, reward, next_state, done)
-        if len(replay_buffer) > batch_size:
+        if len(replay_buffer) > batch_size and frame_idx%10 == 0:
             ploss,vloss=ddpg_update(batch_size)
             win_p = vis.line(X=torch.Tensor([frame_idx]), Y=ploss.view(1) , win = win_p, update='append')
             win_v = vis.line(X=torch.Tensor([frame_idx]), Y=vloss.view(1) , win = win_v,  update='append')
