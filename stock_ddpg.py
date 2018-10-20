@@ -289,13 +289,12 @@ def random_date(start, end):
     )
     
 class env_stock():
-    def __init__(self,init_money,quantize):
-        self.count_max= 400
-        self.view_seq = 10
+    def __init__(self,count_max,view_seq):
+        self.count_max= count_max
+        self.view_seq = view_seq
         self.win1= vis.line(Y=torch.Tensor([0]))
         self.win2= vis.line(Y=torch.Tensor([0]))
-        self.init_money = init_money
-        self.quantize = quantize
+        self.init_money = 0
         
     def reset(self):
         stock_code = '005930'
@@ -324,13 +323,14 @@ class env_stock():
         chart_data = training_data[features_chart_data]
 
 
-        chart_data['date']= pd.to_datetime(chart_data.date).astype(np.int64)/1000000
+        chart_data['date']= pd.to_datetime(chart_data.date).astype(np.int64)/1e12
         data = torch.from_numpy(chart_data.values)
 
         self.data = torch.stack([data[:,0],data[:,4],data[:,5]],dim=1).float()
-
-        self.data = self.data - self.data.mean(dim=0)
-        self.data = self.data/self.data.std(0)
+        self.data = self.data/1e4
+        
+#        self.data = self.data - self.data.mean(dim=0)
+#        self.data = self.data/self.data.std(0)
         
         
         return self.data[self.count :self.count+self.view_seq].view(1,-1)
@@ -378,16 +378,18 @@ class env_stock():
 
 
 
+STEP_MAX =400
+WINDOW_SIZE = 20
 
 
-env = env_stock(0,100)
+env = env_stock(STEP_MAX,WINDOW_SIZE)
 env.reset()
 
 
 #env = NormalizedActions(gym.make("Pendulum-v0"))
 ou_noise = OUNoise(1,theta=0.1)
 
-state_dim  = 3*10
+state_dim  = 3*WINDOW_SIZE
 action_dim = 1
 hidden_dim = 256
 
@@ -476,7 +478,7 @@ while frame_idx < max_frames:
             
         if done:
 #            replay_buffer.push(mem)
-            win_r = vis.line(X=torch.Tensor([frame_idx]), Y=torch.Tensor([episode_reward]).view(1) , win = win_r , update='append')
+            win_r = vis.line(X=torch.Tensor([frame_idx]), Y=torch.Tensor([episode_reward]).clamp(-1e5,1e5).view(1) , win = win_r , update='append')
             win_a = vis.line(Y=torch.Tensor(traj) , win = win_a)
             env.vis()
             
