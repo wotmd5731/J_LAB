@@ -18,7 +18,7 @@ from torch.distributions import Normal
 import visdom
 
 vis = visdom.Visdom()
-
+vis.close()
 # In[2]:
 
 
@@ -271,9 +271,7 @@ def ddpg_update(batch_size,
 # In[]:
             
             
-import logging
 import os
-import settings
 import data_manager
 import pandas as pd
 import numpy as np            
@@ -304,7 +302,7 @@ class env_stock():
         self.sum_action = 0
         
         chart_data = data_manager.load_chart_data(
-            os.path.join(settings.BASE_DIR,
+            os.path.join('./',
                          'data/chart_data/{}.csv'.format(stock_code)))
         prep_data = data_manager.preprocess(chart_data)
         training_data = data_manager.build_training_data(prep_data)
@@ -327,13 +325,20 @@ class env_stock():
         data = torch.from_numpy(chart_data.values)
 
         self.data = torch.stack([data[:,0],data[:,4],data[:,5]],dim=1).float()
-        self.data = self.data/1e4
-        
-#        self.data = self.data - self.data.mean(dim=0)
-#        self.data = self.data/self.data.std(0)
         
         
-        return self.data[self.count :self.count+self.view_seq].view(1,-1)
+        TYPE='MEAN_VAR'
+#        TYPE='DIVIDE'
+        
+        if TYPE=='DIVIDE':
+            self.data = self.data/1e4
+        elif TYPE=='MEAN_VAR':
+            self.data = self.data - self.data.mean(dim=0)
+            self.data = self.data/self.data.std(0)
+        
+        state = self.data[self.count :self.count+self.view_seq].view(1,-1)
+        state = torch.cat([state, torch.Tensor([self.sum_action]).view(1,-1)],dim=1)
+        return state
         pass
         
 
@@ -352,17 +357,22 @@ class env_stock():
         cost = self.data[self.count,1]*delta_a*0.99
         self.pocket += cost
         
-        r_t = cost
+#        r_t = cost
 #        r_t = cost
         if self.count+1 == self.count_max:
 #            self.pocket += self.data[self.count,1]*(self.prev_action*quantize)
             d_t = 1
-#            r_t = self.pocket 
+            r_t = self.pocket 
 
         else:
             self.count +=1
 
-        return self.data[self.count :self.count+self.view_seq].view(1,-1),r_t ,d_t,0
+
+        
+        state = self.data[self.count :self.count+self.view_seq].view(1,-1)
+        state = torch.cat([state, torch.Tensor([self.sum_action]).view(1,-1)],dim=1)
+        
+        return state ,r_t ,d_t,0
         pass
     
     def vis(self):
@@ -389,7 +399,7 @@ env.reset()
 #env = NormalizedActions(gym.make("Pendulum-v0"))
 ou_noise = OUNoise(1,theta=0.1)
 
-state_dim  = 3*WINDOW_SIZE
+state_dim  = 3*WINDOW_SIZE+1
 action_dim = 1
 hidden_dim = 256
 
@@ -440,6 +450,7 @@ win_p = vis.line(Y=torch.Tensor([0]),opts=dict(title='policy'))
 win_v = vis.line(Y=torch.Tensor([0]), opts=dict(title='value'))
 win_r = vis.line(Y=torch.Tensor([0]), opts=dict(title='reward'))
 win_a = vis.line(Y=torch.Tensor([0]), opts=dict(title='action'))
+win_rew = vis.line(Y=torch.Tensor([0]), opts=dict(title='reward_each_epi'))
 
 print(max_steps)
 
@@ -452,6 +463,7 @@ while frame_idx < max_frames:
     ou_noise.reset()
     episode_reward = 0
     traj = []
+    traj_reward = []
     
     for step in range(max_steps):
         action = policy_net.get_action(state)
@@ -459,7 +471,7 @@ while frame_idx < max_frames:
         
         traj.append(env.sum_action)
         
-        next_state, reward, done, _ = env.step(action*5)
+        next_state, reward, done, _ = env.step(action*1)
         
         replay_buffer.push(state, action, reward, next_state, done)
         
@@ -470,6 +482,7 @@ while frame_idx < max_frames:
                 win_v = vis.line(X=torch.Tensor([frame_idx]), Y=vloss.view(1) , win = win_v,  update='append')
             
         state = next_state
+        traj_reward.append(reward)
         episode_reward += reward
         frame_idx += 1
         
@@ -478,7 +491,8 @@ while frame_idx < max_frames:
             
         if done:
 #            replay_buffer.push(mem)
-            win_r = vis.line(X=torch.Tensor([frame_idx]), Y=torch.Tensor([episode_reward]).clamp(-1e5,1e5).view(1) , win = win_r , update='append')
+            win_r = vis.line(X=torch.Tensor([frame_idx]), Y=torch.Tensor([episode_reward]).clamp(-1e5,1e5).view(-1) , win = win_r , update='append')
+            win_rew = vis.line(Y=torch.Tensor(traj_reward).view(-1) , win = win_rew)
             win_a = vis.line(Y=torch.Tensor(traj) , win = win_a)
             env.vis()
             
