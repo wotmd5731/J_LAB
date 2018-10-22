@@ -327,13 +327,16 @@ class env_stock():
         self.data = torch.stack([data[:,0],data[:,4],data[:,5]],dim=1).float()
         
         
-        TYPE='MEAN_VAR'
+        TYPE='MIN_VAR'
 #        TYPE='DIVIDE'
         
         if TYPE=='DIVIDE':
             self.data = self.data/1e4
         elif TYPE=='MEAN_VAR':
             self.data = self.data - self.data.mean(dim=0)
+            self.data = self.data/self.data.std(0)
+        elif TYPE=='MIN_VAR':
+            self.data = self.data - self.data.min(dim=0)[0]
             self.data = self.data/self.data.std(0)
         
         state = self.data[self.count :self.count+self.view_seq].view(1,-1)
@@ -451,6 +454,7 @@ win_v = vis.line(Y=torch.Tensor([0]), opts=dict(title='value'))
 win_r = vis.line(Y=torch.Tensor([0]), opts=dict(title='reward'))
 win_a = vis.line(Y=torch.Tensor([0]), opts=dict(title='action'))
 win_rew = vis.line(Y=torch.Tensor([0]), opts=dict(title='reward_each_epi'))
+win_pocket = vis.line(Y=torch.Tensor([0]))
 
 print(max_steps)
 
@@ -464,6 +468,7 @@ while frame_idx < max_frames:
     episode_reward = 0
     traj = []
     traj_reward = []
+    traj_pocket = []
     
     for step in range(max_steps):
         action = policy_net.get_action(state)
@@ -472,7 +477,7 @@ while frame_idx < max_frames:
         traj.append(env.sum_action)
         
         next_state, reward, done, _ = env.step(action*1)
-        
+        traj_pocket.append(env.pocket.item())
         replay_buffer.push(state, action, reward, next_state, done)
         
         if len(replay_buffer) > batch_size and frame_idx%10 == 0:
@@ -492,8 +497,9 @@ while frame_idx < max_frames:
         if done:
 #            replay_buffer.push(mem)
             win_r = vis.line(X=torch.Tensor([frame_idx]), Y=torch.Tensor([episode_reward]).clamp(-1e5,1e5).view(-1) , win = win_r , update='append')
-            win_rew = vis.line(Y=torch.Tensor(traj_reward).view(-1) , win = win_rew)
-            win_a = vis.line(Y=torch.Tensor(traj) , win = win_a)
+            win_pocket = vis.line(Y=torch.Tensor(traj_pocket).view(-1) , win = win_pocket ,opts=dict(title='pocket_state each step'))
+            win_rew = vis.line(Y=torch.Tensor(traj_reward).view(-1) , win = win_rew,opts=dict(title='reward each step'))
+            win_a = vis.line(Y=torch.Tensor(traj) , win = win_a,opts=dict(title='sum action each step'))
             env.vis()
             
             break
