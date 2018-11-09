@@ -12,6 +12,14 @@ import gym
 env_conf = {"state_shape": (3, 84, 84),
             "action_dim": 4,
             "name": "Breakout-v0"}
+batch_size = 8
+burn_in_length = 10
+sequences_length = 20
+feature_state = (3,84,84)
+feature_reward = 1
+feature_action = 4
+env = gym.make(env_conf['name'])
+
 
 class Duelling_LSTM_DQN(torch.nn.Module):
     def __init__(self, state_shape, action_dim):
@@ -40,7 +48,9 @@ class Duelling_LSTM_DQN(torch.nn.Module):
         #assert x.shape == self.input_shape, "Input shape should be:" + str(self.input_shape) + "Got:" + str(x.shape)
         x = self.front(x)
         x = x.view(-1, 64 * 7 * 7)
-        x ,hidden = self.lstm(x, hidden)
+        hidden = self.lstm(x, hidden)
+        x=hidden[0]
+        
 #        output of shape (seq_len, batch, num_directions * hidden_size)
         
         value = self.value(self.value_stream_layer(x))
@@ -48,20 +58,77 @@ class Duelling_LSTM_DQN(torch.nn.Module):
         action_value = value + (advantage - (1/self.action_dim) * advantage.sum() )
         return action_value, hidden
 
-env = gym.make(env_conf['name'])
 
 #Q = Duelling_LSTM_DQN(env_conf['state_shape'], env_conf['action_dim'])
 
+def obs_preproc(x):
+    return torch.from_numpy(np.resize(x, feature_state)).float().unsqueeze(0)/256
+    
+Transition = namedtuple('Transition', ['S', 'A', 'R', 'Gamma'])
+Global_Transition = namedtuple('Global_Transition', ['seq', 'local_buf', 'hidden', 'done'])
 
+global_buf = []
+
+def actor_process(global_buf):
+    max_frame = 50
+    policy_epsilon = 0.01
+    action = 0
+    gamma_t = 0.997
+    frame = 0
+    ot= obs_preproc(env.reset())
+    hidden_main = (torch.zeros([1,512]), torch.zeros([1,512]))
+    while frame <= max_frame:
+        local_buf = []
+        for seq in range(sequences_length):
+            if seq == sequences_length//2:
+                copy_hidden = copy.deepcopy(hidden_main)
+            with torch.no_grad():
+                Qt, hidden_main = Q_main(ot,hidden_main)
+                #e greedy
+                if random.random() >= policy_epsilon:
+                    action =  torch.argmax(Qt,dim=1).item()
+                else:
+                    action = random.randint(0,feature_action-1)
+            
+            ot_1, rt,dt,_  = env.step(action)
+            ot_1 = obs_preproc(ot_1)
+            local_buf.append(Transition(ot,action,rt,gamma_t))
+            
+            ot = ot_1
+            if dt == True:
+                break
+        seq+=1
+        global_buf.append(Global_Transition(seq,local_buf,copy_hidden,dt))
+        frame+=seq
+        
+def h_func(x):
+    epsilon= 10e-2
+    return torch.sign(x) * (torch.sqrt(torch.abs(x)+1)-1)+epsilon*x
+def h_inv_func(x):
+    epsilon= 10e-2
+    return torch.sign(x) * ((((torch.sqrt(1+4*epsilon*(torch.abs(x)+1+epsilon))-1)/(2*epsilon))**2)-1)    
+    
+def learner_process(global_buf):
+    n_step = 5
+    gamma = 0.997
+    frame = 0
+    max_frame = 10
+    while frame<=max_frame:
+        frame+=1
+        for bat in range(batch_size):
+            while True:
+                idx = random.randint(0,len(global_buf)-1)
+                if global_buf[idx].done == False:
+                    break
+            
+            #burn in
+            burn_list = global_buf[idx].local_buf
+            
+            hidden_copy = 
 
 
 def update():
-    batch_size = 8
-    burn_in_length = 40
-    sequences_length = 80
-    feature_state = (3,84,84)
-    feature_reward = 1
-    feature_action = 4
+
     
     
     
@@ -88,13 +155,7 @@ def update():
     n_step = 5 # n-step 
     t = 0 # init time step
     gamma = 0.997
-    def h_func(x):
-        epsilon= 10e-2
-        return torch.sign(x) * (torch.sqrt(torch.abs(x)+1)-1)+epsilon*x
-    def h_inv_func(x):
-        epsilon= 10e-2
-        return torch.sign(x) * ((((torch.sqrt(1+4*epsilon*(torch.abs(x)+1+epsilon))-1)/(2*epsilon))**2)-1)    
-        
+
 
 
     #calc Q tilda 
