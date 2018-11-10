@@ -128,47 +128,60 @@ def learner_process(global_buf):
             #burn in
             burn_list = global_buf[idx].local_buf
             
-            hidden_copy = global_buf[idx].hidden
-            hidden_main = copy.deepcopy(hidden_copy)
-            hidden_target = copy.deepcopy(hidden_copy)
+            hidden_main = copy.deepcopy(global_buf[idx].hidden)
+            hidden_target = copy.deepcopy(global_buf[idx].hidden)
             
             ot_burn = [ burn_list[sequences_length - burn_in_length +k].S for k in range(burn_in_length)]
             
             for i in range(burn_in_length):
                 _, hidden_main = Q_main(ot_burn[i], hidden_main)
                 _, hidden_target = Q_main(ot_burn[i], hidden_target)
+            
+            stored_hidden_main = copy.deepcopy(hidden_main)
+            stored_hidden_target = copy.deepcopy(hidden_target)
+            
+            
+            #train
+            train_list = global_buf[idx+1].local_buf
+            
+            St = [train_list[i].S for i in range(sequences_length)]
+            At = [train_list[i].A for i in range(sequences_length)]
+            Rt = [train_list[i].R for i in range(sequences_length)]
+            Gamma_t = [train_list[i].Gamma for i in range(sequences_length)]
+            
+            
+            train_seq = global_buf[idx+1].seq
+            
+            
+            #calc Q tilda
+            Q_tilda = []
+            for i in range(train_seq):
+                target_Q_v, hidden_target = Q_target(St[i], hidden_target)
+                a_star = torch.argmax(target_Q_v)
                 
-                #train
-                train_list = global_buf[idx].local_buf
-                train_seq = global_buf[idx].seq
+                main_Q_v , hidden_main = Q_main(St[i], hidden_main)
+                Q_tilda.append(main_Q_v[a_star])
+
                 
-                #calc Q tilda
-                Q_tilda = []
-                for i in range(train_seq):
-                    target_Q_v, hidden_target = Q_target(ot[i], hidden_target)
-                    a_star = torch.argmax(target_Q_v)
-                    
-                    main_Q_v , hidden_main = Q_main(ot[i], hidden_main)
-                    Q_tilda.append(main_Q_v[a_star])
-                    
+            hidden_main = copy.deepcopy(stored_hidden_main)
+            hidden_target = copy.deepcopy(stored_hidden_target)
+            
+            T_loss = 0
+            for i in range(train_seq):
+                rt_sum = torch.sum( [Rt[i+k]*gamma**k for k in range(n_step)] )
+                inv_scaling_Q = h_inv_func( Q_tilda[i+n_step] )
+                y_t_hat = h_func(rt_sum + gamma**n_step * inv_scaling_Q)
                 
-                hidden_main = copy.deepcopy(hidden_copy)
-                hidden_target = copy.deepcopy(hidden_copy)
+                main_Q_value, hidden_main = Q_main(St[i] , hidden_main)
                 
-                for i in range(train_seq):
-                    rt_sum = torch.sum( [rt[i+k]*gamma**k for k in range(n_step)] )
-                    inv_scaling_Q = h_inv_func( Q_tilda[i+n_step] )
-                    y_t_hat = h_func(rt_sum + gamma**n_step * inv_scaling_Q)
-                    
-                    main_Q_value, hidden_main = Q_main(ot[i] , hidden_main)
-                    
-                    loss = 1/2*(y_t_hat - main_Q_value)**2
-                    loss.backward()
+                loss = 1/2*(y_t_hat - main_Q_value[At[i]])**2
                 
-                
-        
-       
-        
+                T_loss += loss
+            
+            
+    
+   
+    
         
         
         
