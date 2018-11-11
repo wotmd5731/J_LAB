@@ -3,9 +3,11 @@ import torch
 import torch.multiprocessing as mp
 import random
 import numpy as np
-from collections import namedtuple
-from duelling_network import DuellingDQN
-from env import make_local_env
+import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as F
+
+from collections import namedtuple, deque
 import gym
 import copy
 
@@ -67,21 +69,24 @@ def obs_preproc(x):
 Transition = namedtuple('Transition', ['S', 'A', 'R', 'Gamma'])
 Global_Transition = namedtuple('Global_Transition', ['seq', 'local_buf', 'hidden', 'done'])
 
-global_buf = []
+global_buf = deque(maxlen = 1000)
+
 Q_main = Duelling_LSTM_DQN(feature_state, feature_action)
 Q_target = Duelling_LSTM_DQN(feature_state, feature_action)
 
+value_optimizer  = optim.Adam(Q_main.parameters(),  lr=0.0001)
 
 
 def actor_process(global_buf):
-    max_frame = 50
-    policy_epsilon = 0.01
+    max_frame = 2000
+    policy_epsilon = 0.1
     action = 0
     gamma_t = 0.997
     frame = 0
+    total_reward = []
     ot= obs_preproc(env.reset())
     hidden_main = (torch.zeros([1,512]), torch.zeros([1,512]))
-    while frame <= max_frame:
+    while frame < max_frame:
         local_buf = []
         for seq in range(sequences_length):
             if seq == sequences_length//2:
@@ -95,15 +100,22 @@ def actor_process(global_buf):
                     action = random.randint(0,feature_action-1)
             
             ot_1, rt,dt,_  = env.step(action)
+            env.render()
+            
+            total_reward.append(rt)
             ot_1 = obs_preproc(ot_1)
             local_buf.append(Transition(ot,action,rt,gamma_t))
             
             ot = ot_1
             if dt == True:
+                ot= obs_preproc(env.reset())
+                print('total reward: {}'.format(sum(total_reward)))
                 break
         seq+=1
         global_buf.append(Global_Transition(seq,local_buf,copy_hidden,dt))
         frame+=seq
+        if dt == True:
+            break
         
 def h_func(x):
     epsilon= 10e-2
@@ -116,80 +128,99 @@ def learner_process(global_buf):
     n_step = 5
     gamma = 0.997
     frame = 0
-    max_frame = 10
-    while frame<=max_frame:
+    max_frame = 1
+    
+    
+    while frame<max_frame:
         frame+=1
+        T_loss = 0
+        
         for bat in range(batch_size):
+            
             while True:
-                idx = random.randint(0,len(global_buf)-1)
+                idx = random.randint(0,len(global_buf)-1-1)
                 if global_buf[idx].done == False:
                     break
             
-            #burn in
-            burn_list = global_buf[idx].local_buf
             
-            hidden_main = copy.deepcopy(global_buf[idx].hidden)
-            hidden_target = copy.deepcopy(global_buf[idx].hidden)
-            
-            ot_burn = [ burn_list[sequences_length - burn_in_length +k].S for k in range(burn_in_length)]
-            
-            for i in range(burn_in_length):
-                _, hidden_main = Q_main(ot_burn[i], hidden_main)
-                _, hidden_target = Q_main(ot_burn[i], hidden_target)
-            
-            stored_hidden_main = copy.deepcopy(hidden_main)
-            stored_hidden_target = copy.deepcopy(hidden_target)
-            
-            
-            #train
-            train_list = global_buf[idx+1].local_buf
-            
-            St = [train_list[i].S for i in range(sequences_length)]
-            At = [train_list[i].A for i in range(sequences_length)]
-            Rt = [train_list[i].R for i in range(sequences_length)]
-            Gamma_t = [train_list[i].Gamma for i in range(sequences_length)]
-            
-            
-            train_seq = global_buf[idx+1].seq
-            
-            
-            #calc Q tilda
-            Q_tilda = []
-            for i in range(train_seq):
-                target_Q_v, hidden_target = Q_target(St[i], hidden_target)
-                a_star = torch.argmax(target_Q_v)
+            with torch.no_grad():
+                #burn in
+                burn_list = global_buf[idx].local_buf
+                burn_seq = global_buf[idx].seq
                 
-                main_Q_v , hidden_main = Q_main(St[i], hidden_main)
-                Q_tilda.append(main_Q_v[a_star])
-
+                hidden_main = (global_buf[idx].hidden[0].clone(),global_buf[idx].hidden[1].clone())
+                hidden_target = (global_buf[idx].hidden[0].clone(),global_buf[idx].hidden[1].clone())
                 
-            hidden_main = copy.deepcopy(stored_hidden_main)
-            hidden_target = copy.deepcopy(stored_hidden_target)
+                
+                ot_burn = [ burn_list[sequences_length - burn_in_length +k].S for k in range(burn_in_length)]
             
-            T_loss = 0
-            for i in range(train_seq):
-                rt_sum = torch.sum( [Rt[i+k]*gamma**k for k in range(n_step)] )
+                for i in range(burn_in_length):
+                    _, hidden_main = Q_main(ot_burn[i], hidden_main)
+                    _, hidden_target = Q_main(ot_burn[i], hidden_target)
+                
+                
+                stored_hidden_main = (hidden_main[0].clone(),hidden_main[1].clone())
+                stored_hidden_target = (hidden_target[0].clone(),hidden_target[1].clone())
+    
+                
+                #train
+                train_list = global_buf[idx+1].local_buf
+                train_seq = global_buf[idx+1].seq
+                
+                St = [train_list[i].S for i in range(train_seq)]
+                At = torch.Tensor([train_list[i].A for i in range(train_seq)]).long()
+                Rt = torch.Tensor([train_list[i].R for i in range(train_seq)])
+                Gamma_t = torch.Tensor([train_list[i].Gamma for i in range(train_seq)])
+                
+                
+                
+                
+                #calc Q tilda
+                Q_tilda = []
+                for i in range(train_seq):
+                    target_Q_v, hidden_target = Q_target(St[i], hidden_target)
+                    a_star = torch.argmax(target_Q_v, dim =1)
+                    
+                    main_Q_v , hidden_main = Q_main(St[i], hidden_main)
+                    Q_tilda.append(torch.index_select(main_Q_v ,1,a_star))
+    
+                
+            
+            
+            
+            hidden_main = (stored_hidden_main[0].clone(),stored_hidden_main[1].clone())
+            hidden_target = (stored_hidden_target[0].clone(),stored_hidden_target[1].clone())
+            
+            
+            
+            for i in range(train_seq-n_step):
+                rt_sum = torch.sum( torch.stack([Rt[i+k]*gamma**k for k in range(n_step)]) )
                 inv_scaling_Q = h_inv_func( Q_tilda[i+n_step] )
                 y_t_hat = h_func(rt_sum + gamma**n_step * inv_scaling_Q)
                 
                 main_Q_value, hidden_main = Q_main(St[i] , hidden_main)
                 
-                loss = 1/2*(y_t_hat - main_Q_value[At[i]])**2
+                loss = 1/2*(y_t_hat - torch.index_select(main_Q_value, 1, At[i] ) )**2
                 
                 T_loss += loss
+                
+                
+        value_optimizer.zero_grad()        
+        (T_loss/batch_size).backward()
+        value_optimizer.step()
             
-            
+        print('batch:{} T_loss:{} '.format(bat,T_loss.item()))
     
-   
-    
+        soft_tau = 0.3
+        for target_param, param in zip(Q_target.parameters(), Q_main.parameters()):
+                target_param.data.copy_(
+                    target_param.data * (1.0 - soft_tau) + param.data * soft_tau
+                )
         
         
-        
-        
-        
-
-
-
+for i in range(1000):
+    actor_process(global_buf)
+#    learner_process(global_buf)
     
 
 
