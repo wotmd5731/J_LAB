@@ -72,7 +72,7 @@ def hard_update(target, source):
             target_param.data.copy_(param.data)
 
 
-def actor_process(i, shared_state, shared_queue, max_frame = 1 ):
+def actor_process(rank, shared_state, shared_queue, max_frame = 1 ):
     print('{} actor process start '.format(i))
     
     Q_main = Duelling_LSTM_DQN(feature_state, feature_action)
@@ -80,7 +80,7 @@ def actor_process(i, shared_state, shared_queue, max_frame = 1 ):
     
 
     env = gym.make("Breakout-v0")
-    policy_epsilon = 0.1*i
+    policy_epsilon = 0.1*rank
     action = 0
     gamma_t = 0.997
     frame = 0
@@ -106,21 +106,21 @@ def actor_process(i, shared_state, shared_queue, max_frame = 1 ):
             
             total_reward.append(rt)
             ot_1 = obs_preproc(ot_1)
-            local_buf.append(Transition(ot,action,rt,gamma_t))
+            local_buf.append([ot,action,rt,gamma_t])
             
             ot = ot_1
             if dt == True:
                 ot= obs_preproc(env.reset())
                 print('total reward: {}'.format(sum(total_reward)))
+                
                 break
             if frame % 100 == 0:
                 Q_main.load_state_dict(shared_state["Q_state"])
 #                hard_update(Q_main,shared_state["Q_state"])
+        shared_queue.put([seq+1,local_buf,copy_hidden,dt])
             
-            
-        seq+=1
-        shared_queue.put([seq,local_buf,copy_hidden,dt])
-        global_buf.append(Global_Transition(seq,local_buf,copy_hidden,dt))
+        
+#        global_buf.append(Global_Transition(seq,local_buf,copy_hidden,dt))
         
                 
     print('{} actor process done '.format(i))
@@ -147,9 +147,10 @@ def learner_process(rank , shared_state, shared_queue, max_frame =1 ):
     n_step = 5
     gamma = 0.997
     frame = 0
-    
+    global_buf = []
     
     while frame<max_frame:
+        shared_queue.get()
         frame+=1
         T_loss = 0
         
