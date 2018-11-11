@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import torch
 import torch.multiprocessing as mp
+
 import random
 import numpy as np
 import torch.nn as nn
@@ -10,17 +11,8 @@ import torch.nn.functional as F
 from collections import namedtuple, deque
 import gym
 import copy
+import sys
 
-env_conf = {"state_shape": (3, 84, 84),
-            "action_dim": 4,
-            "name": "Breakout-v0"}
-batch_size = 8
-burn_in_length = 10
-sequences_length = 20
-feature_state = (3,84,84)
-feature_reward = 1
-feature_action = 4
-env = gym.make(env_conf['name'])
 
 
 class Duelling_LSTM_DQN(torch.nn.Module):
@@ -69,17 +61,26 @@ def obs_preproc(x):
 Transition = namedtuple('Transition', ['S', 'A', 'R', 'Gamma'])
 Global_Transition = namedtuple('Global_Transition', ['seq', 'local_buf', 'hidden', 'done'])
 
-global_buf = deque(maxlen = 1000)
+def soft_update(target, source, tau):
+    for target_param, param in zip(target.parameters(), source.parameters()):
+        target_param.data.copy_(
+            target_param.data * (1.0 - tau) + param.data * tau
+        )
 
-Q_main = Duelling_LSTM_DQN(feature_state, feature_action)
-Q_target = Duelling_LSTM_DQN(feature_state, feature_action)
+def hard_update(target, source):
+    for target_param, param in zip(target.parameters(), source.parameters()):
+            target_param.data.copy_(param.data)
 
-value_optimizer  = optim.Adam(Q_main.parameters(),  lr=0.0001)
 
+def actor_process(i, shared_state, shared_queue, max_frame = 1 ):
+    print('{} actor process start '.format(i))
+    
+    Q_main = Duelling_LSTM_DQN(feature_state, feature_action)
+    Q_main.load_state_dict(shared_state["Q_state"])
+    
 
-def actor_process(global_buf):
-    max_frame = 2000
-    policy_epsilon = 0.1
+    env = gym.make("Breakout-v0")
+    policy_epsilon = 0.1*i
     action = 0
     gamma_t = 0.997
     frame = 0
@@ -89,6 +90,7 @@ def actor_process(global_buf):
     while frame < max_frame:
         local_buf = []
         for seq in range(sequences_length):
+            frame+=1
             if seq == sequences_length//2:
                 copy_hidden = copy.deepcopy(hidden_main)
             with torch.no_grad():
@@ -111,11 +113,19 @@ def actor_process(global_buf):
                 ot= obs_preproc(env.reset())
                 print('total reward: {}'.format(sum(total_reward)))
                 break
+            if frame % 100 == 0:
+                Q_main.load_state_dict(shared_state["Q_state"])
+#                hard_update(Q_main,shared_state["Q_state"])
+            
+            
         seq+=1
+        shared_queue.put([seq,local_buf,copy_hidden,dt])
         global_buf.append(Global_Transition(seq,local_buf,copy_hidden,dt))
-        frame+=seq
-        if dt == True:
-            break
+        
+                
+    print('{} actor process done '.format(i))
+#        if dt == True:
+#            break
         
 def h_func(x):
     epsilon= 10e-2
@@ -124,11 +134,19 @@ def h_inv_func(x):
     epsilon= 10e-2
     return torch.sign(x) * ((((torch.sqrt(1+4*epsilon*(torch.abs(x)+1+epsilon))-1)/(2*epsilon))**2)-1)    
     
-def learner_process(global_buf):
+def learner_process(rank , shared_state, shared_queue, max_frame =1 ):
+    Q_main = Duelling_LSTM_DQN(feature_state, feature_action)
+    Q_target = Duelling_LSTM_DQN(feature_state, feature_action)
+    Q_main.load_state_dict(shared_state["Q_state"])
+    Q_target.load_state_dict(shared_state["Q_state"])
+    
+    
+    value_optimizer  = optim.Adam(Q_main.parameters(),  lr=0.0001)
+    global_buf = deque(maxlen = 1000)
+
     n_step = 5
     gamma = 0.997
     frame = 0
-    max_frame = 1
     
     
     while frame<max_frame:
@@ -210,21 +228,67 @@ def learner_process(global_buf):
         value_optimizer.step()
             
         print('batch:{} T_loss:{} '.format(bat,T_loss.item()))
-    
-        soft_tau = 0.3
-        for target_param, param in zip(Q_target.parameters(), Q_main.parameters()):
-                target_param.data.copy_(
-                    target_param.data * (1.0 - soft_tau) + param.data * soft_tau
-                )
-        
-        
-for i in range(1000):
-    actor_process(global_buf)
+        if frame % 3 == 0:
+            tau = 0.3
+            for target_param, param in zip(Q_target.parameters(),Q_main.parameters()):
+                target_param.data.copy_( target_param.data * (1.0 - tau) + param.data * tau )
+            shared_state["Q_state"] = Q_main.state_dict()
+#for i in range(1000):
+#    actor_process(global_buf)
 #    learner_process(global_buf)
     
 
 
+#
+#mp_manager = mp.Manager()
+#shared_state = mp_manager.dict()
+#shared_mem = mp_manager.Queue()
+#
+#
+#ReplayManager = BaseManager()
+#ReplayManager.start()
+#replay_mem = ReplayManager.Memory(replay_params["soft_capacity"],  replay_params)
+#
+#    
 
+if __name__ == '__main__':
+    env_conf = {"state_shape": (3, 84, 84),
+                "action_dim": 4,
+                "name": "Breakout-v0"}
+    batch_size = 8
+    burn_in_length = 10
+    sequences_length = 20
+    feature_state = (3,84,84)
+    feature_reward = 1
+    feature_action = 4
+    
+    
+    
+    Q_main = Duelling_LSTM_DQN(feature_state, feature_action)
+    
+
+
+
+    num_processes = 0
+    
+    manager = mp.Manager()
+    
+    
+    shared_state = manager.dict()
+    shared_queue = manager.Queue()
+    shared_state["Q_state"] = Q_main.state_dict()
+    actor_process(0, shared_state, shared_queue,100)
+    learner_process(0, shared_state, shared_queue,1)
+#    actor_procs = []
+#    for i in range(num_processes):
+#        print(i)
+#        actor_proc = mp.Process(target=actor_process, args=(i, shared_state, shared_queue,))
+#        actor_proc.start()
+#        actor_procs.append(actor_proc)
+#    for act in actor_procs:
+#        act.join()    
+        
+    
 
 
 
