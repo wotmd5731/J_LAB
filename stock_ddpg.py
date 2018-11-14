@@ -34,7 +34,7 @@ get_ipython().run_line_magic('matplotlib', 'inline')
 
 use_cuda = torch.cuda.is_available()
 device   = torch.device("cuda" if use_cuda else "cpu")
-
+print(device)
 
 # <h2>Replay Buffer</h2>
 
@@ -90,31 +90,6 @@ class ReplayBuffer:
         return len(self.buffer)
 
 
-# <h2>Normalize action space</h2>
-
-# In[8]:
-
-
-class NormalizedActions(gym.ActionWrapper):
-
-    def _action(self, action):
-        low_bound   = self.action_space.low
-        upper_bound = self.action_space.high
-        
-        action = low_bound + (action + 1.0) * 0.5 * (upper_bound - low_bound)
-        action = np.clip(action, low_bound, upper_bound)
-        
-        return action
-
-    def _reverse_action(self, action):
-        low_bound   = self.action_space.low
-        upper_bound = self.action_space.high
-        
-        action = 2 * (action - low_bound) / (upper_bound - low_bound) - 1
-        action = np.clip(action, low_bound, upper_bound)
-        
-        return action
-
 
 # <h2>Ornstein-Uhlenbeck process</h2>
 # Adding time-correlated noise to the actions taken by the deterministic policy<br>
@@ -151,18 +126,6 @@ class OUNoise(object):
         return torch.clamp(action + ou_state, self.low, self.high)
     
 #https://github.com/vitchyr/rlkit/blob/master/rlkit/exploration_strategies/ou_strategy.py
-
-
-# In[16]:
-
-
-def plot(frame_idx, rewards):
-    clear_output(True)
-    plt.figure(figsize=(20,5))
-    plt.subplot(131)
-    plt.title('frame %s. reward: %s' % (frame_idx, rewards[-1]))
-    plt.plot(rewards)
-    plt.show()
 
 
 # <h1> Continuous control with deep reinforcement learning</h1>
@@ -278,27 +241,21 @@ import numpy as np
 import random
 import datetime
 
-
-def random_date(start, end):
-    """Generate a random datetime between `start` and `end`"""
-    return start + datetime.timedelta(
-        # Get a random amount of seconds between `start` and `end`
-        seconds=random.randint(0, int((end - start).total_seconds())),
-    )
-    
 class env_stock():
-    def __init__(self,count_max,view_seq):
+    def __init__(self,count_max,view_seq,init_money):
         self.count_max= count_max
         self.view_seq = view_seq
         self.win1= vis.line(Y=torch.Tensor([0]))
         self.win2= vis.line(Y=torch.Tensor([0]))
-        self.init_money = 0
+        self.init_money = init_money
         
     def reset(self):
-        stock_code = '005930'
+        stock_code = np.random.choice(['005930' , '000270','000660','005380','005490','009240','009540'])
+        
         self.prev_action = 0
         self.count = 0
-        self.pocket= self.init_money
+        self.balance = self.init_money
+        self.num_stocks = 0
         self.sum_action = 0
         
         chart_data = data_manager.load_chart_data(
@@ -316,28 +273,31 @@ class env_stock():
 #                                      (training_data['date'] <= self.end_date)]
         training_data = training_data.dropna()
         
+        
         # 차트 데이터 분리
         features_chart_data = ['date', 'open', 'high', 'low', 'close', 'volume']
-        chart_data = training_data[features_chart_data]
+        self.chart_data = training_data[features_chart_data]
+        self.chart_data['date']= pd.to_datetime(self.chart_data.date).astype(np.int64)/1e12
 
 
-        chart_data['date']= pd.to_datetime(chart_data.date).astype(np.int64)/1e12
-        data = torch.from_numpy(chart_data.values)
+        
+        # 학습 데이터 분리
+        features_training_data = [
+            'open_lastclose_ratio', 'high_close_ratio', 'low_close_ratio',
+            'close_lastclose_ratio', 'volume_lastvolume_ratio',
+            'close_ma5_ratio', 'volume_ma5_ratio',
+            'close_ma10_ratio', 'volume_ma10_ratio',
+            'close_ma20_ratio', 'volume_ma20_ratio',
+            'close_ma60_ratio', 'volume_ma60_ratio',
+            'close_ma120_ratio', 'volume_ma120_ratio'
+        ]
+        training_data = training_data[features_training_data]
+    
+    
+        
+        self.data = torch.from_numpy(training_data.values).float()
 
-        self.data = torch.stack([data[:,0],data[:,4],data[:,5]],dim=1).float()
-        
-        
-        TYPE='MIN_VAR'
-#        TYPE='DIVIDE'
-        
-        if TYPE=='DIVIDE':
-            self.data = self.data/1e4
-        elif TYPE=='MEAN_VAR':
-            self.data = self.data - self.data.mean(dim=0)
-            self.data = self.data/self.data.std(0)
-        elif TYPE=='MIN_VAR':
-            self.data = self.data - self.data.min(dim=0)[0]
-            self.data = self.data/self.data.std(0)
+
         
         state = self.data[self.count :self.count+self.view_seq].view(1,-1)
         state = torch.cat([state, torch.Tensor([self.sum_action]).view(1,-1)],dim=1)
@@ -392,17 +352,17 @@ class env_stock():
 
 
 STEP_MAX =400
-WINDOW_SIZE = 20
+WINDOW_SIZE = 2
 
 
-env = env_stock(STEP_MAX,WINDOW_SIZE)
+env = env_stock(STEP_MAX,WINDOW_SIZE,10000000)
 env.reset()
 
 
 #env = NormalizedActions(gym.make("Pendulum-v0"))
 ou_noise = OUNoise(1,theta=0.1)
 
-state_dim  = 3*WINDOW_SIZE+1
+state_dim  = 15*WINDOW_SIZE+1
 action_dim = 1
 hidden_dim = 256
 
