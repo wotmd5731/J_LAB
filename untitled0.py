@@ -24,14 +24,21 @@ hidden_dim = 128
 batch_size = 8
 burn_in_length = 10
 sequences_length = 20
-feature_state = (1,84,84)
+#feature_state = (1,84,84)
+feature_state = (4)
 feature_reward = 1
 feature_action = 2
 n_step = 5
 gamma_t = 0.997
+IMG_GET_RENDER = False   
+#IMG_GET_RENDER = True   
+
 
 
 def obs_preproc(x):
+    if IMG_GET_RENDER == False   :
+        x = torch.from_numpy(np.resize(x, feature_state)).float().unsqueeze(0)
+        return x
     x= np.dot(x, np.array([[0.299, 0.587, 0.114]]).T)
     x= np.reshape(x, (1, x.shape[1], x.shape[0]))
     x = torch.from_numpy(np.resize(x, feature_state)).float().unsqueeze(0)/255
@@ -44,13 +51,16 @@ class DQN(torch.nn.Module):
         super(DQN, self).__init__()
         self.input_shape = state_shape
         self.action_dim = action_dim
-        self.front = torch.nn.Sequential(torch.nn.Conv2d(state_shape[0], 64, 5, stride=3),
-                                          torch.nn.ReLU(),
-                                          torch.nn.Conv2d(64, 64, 3, stride=3),
-                                          torch.nn.ReLU(),
-                                          torch.nn.Conv2d(64, 64, 3, stride=1),
-                                          torch.nn.ReLU())
-        self.size = 7
+#        self.front = torch.nn.Sequential(torch.nn.Conv2d(state_shape[0], 64, 5, stride=3),
+#                                          torch.nn.ReLU(),
+#                                          torch.nn.Conv2d(64, 64, 3, stride=3),
+#                                          torch.nn.ReLU(),
+#                                          torch.nn.Conv2d(64, 64, 3, stride=1),
+#                                          torch.nn.ReLU())
+        self.size = 2
+        self.front = torch.nn.Sequential(torch.nn.Linear( 4, 64*self.size*self.size),
+                                                      torch.nn.ReLU())
+        
         
 #        self.lstm = torch.nn.LSTMCell(input_size=64*self.size*self.size , hidden_size=hidden_dim)
         self.value_stream_layer = torch.nn.Sequential(torch.nn.Linear( 64*self.size*self.size, hidden_dim),
@@ -81,7 +91,7 @@ def actor_process(rank, shared_state, shared_queue, max_frame = 1 ):
     Q_main.load_state_dict(shared_state["Q_state"])
     
 
-    IMG_GET_RENDER = True    
+     
 
 #    env = gym.make("Breakout-v0")
     env = gym.make('CartPole-v0')
@@ -197,18 +207,18 @@ if __name__ == '__main__':
     shared_queue = manager.Queue()
     shared_state["Q_state"] = Q_main.state_dict()
     
-#    actor_process(0, shared_state, shared_queue,100)
-#    learner_process(0, shared_state, shared_queue,2)
+    actor_process(0, shared_state, shared_queue,100)
+    learner_process(0, shared_state, shared_queue,2)
     
-    learner_procs = mp.Process(target=learner_process, args=(999, shared_state, shared_queue,10000))
-    learner_procs.start()
-    
-    actor_procs = []
-    for i in range(num_processes):
-        print(i)
-        actor_proc = mp.Process(target=actor_process, args=(i, shared_state, shared_queue,10000))
-        actor_proc.start()
-        actor_procs.append(actor_proc)
-    for act in actor_procs:
-        act.join()    
-    learner_procs.join()
+#    learner_procs = mp.Process(target=learner_process, args=(999, shared_state, shared_queue,10000))
+#    learner_procs.start()
+#    
+#    actor_procs = []
+#    for i in range(num_processes):
+#        print(i)
+#        actor_proc = mp.Process(target=actor_process, args=(i, shared_state, shared_queue,10000))
+#        actor_proc.start()
+#        actor_procs.append(actor_proc)
+#    for act in actor_procs:
+#        act.join()    
+#    learner_procs.join()
