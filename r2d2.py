@@ -140,7 +140,7 @@ def hard_update(target, source):
             target_param.data.copy_(param.data)
 
 
-def actor_process(rank, shared_state, shared_queue, max_frame , dev, num_processes):
+def actor_process(rank, shared_state, shared_queue, max_frame , dev, num_processes, schedule_dict):
     
     Q_main = Duelling_LSTM_DQN(feature_state, feature_action)
     Q_main.load_state_dict(shared_state["Q_state"])
@@ -161,6 +161,10 @@ def actor_process(rank, shared_state, shared_queue, max_frame , dev, num_process
     dt = True
 
     while frame < max_frame:
+        schedule_dict[str(rank)+'frame']=frame
+        while schedule_dict[str(rank)+'sleep'] :
+            time.sleep(1)
+
         for seq in range(sequences_length//2):
             if dt==True :
                 win_r = vis.line(X=torch.Tensor([frame]), Y=torch.Tensor([sum(total_reward)]), win= win_r , update ='append')
@@ -329,9 +333,16 @@ if __name__ == '__main__':
     shared_state = manager.dict()
     shared_queue = manager.Queue()
     shared_state["Q_state"] = Q_main.state_dict()
+
+    schedule_dict = manager.dict()
+    for i in range(num_processes):
+        schedule_dict[str(i)+'frame']=0
+        schedule_dict[str(i)+'sleep']=False
+
+
     
     if USE_MP == False:
-        actor_process(0, shared_state, shared_queue,100, dev_cpu, num_processes)
+        actor_process(0, shared_state, shared_queue,100, dev_cpu, num_processes, schedule_dict)
         learner_process(0, shared_state, shared_queue,2, dev_gpu)
     else: 
         learner_procs = mp.Process(target=learner_process, args=(999, shared_state, shared_queue,100000,dev_gpu,))
@@ -340,9 +351,24 @@ if __name__ == '__main__':
         actor_procs = []
         for i in range(num_processes):
             print(i)
-            actor_proc = mp.Process(target=actor_process, args=(i, shared_state, shared_queue,1000000,dev_cpu,num_processes))
+            actor_proc = mp.Process(target=actor_process, args=(i, shared_state, shared_queue,1000000,dev_cpu,num_processes, schedule_dict))
             actor_proc.start()
             actor_procs.append(actor_proc)
+
+        frame = [0 for i in range(num_processes)]
+        while True:
+            time.sleep(1)
+            for i in range(num_processes):
+                frame[i] = schedule_dict[str(i)+'frame']
+            if max(frame) - min(frame) > 100:
+                idx = torch.LongTensor(frame).topk(num_processes//2)[1]
+                for i in range(num_processes):
+                    if i in idx:
+                        schedule_dict[str(i)+'sleep']=True
+                    esle:
+                        schedule_dict[str(i)+'sleep']=False
+                        
+
         for act in actor_procs:
             act.join()    
         learner_procs.join()
