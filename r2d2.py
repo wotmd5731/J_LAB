@@ -12,14 +12,63 @@ from collections import namedtuple, deque
 import gym
 import copy
 import sys
+import time
+import visdom
+
+vis = visdom.Visdom()
+vis.close()
+
+
+
+batch_size = 32
+burn_in_length = 4
+sequences_length = 12
 
 hidden_dim = 128
-batch_size = 8
-burn_in_length = 10
-sequences_length = 20
-feature_state = (3,64,64)
-feature_reward = 1
-feature_action = 4
+n_step = 4
+def_gamma = 0.997
+def_global_buf_maxlen = 10000
+def_lr = 0.0001
+def_soft_update_tau = 0.3
+def_learner_update_step = 50
+def_actor_update_step = 500
+train_start_size = 500
+num_process = 8
+learner_frame_interval = 0.01 #sec
+
+CONF = 'cartpole_state_4'
+
+if CONF == 'cartpole_state_4':
+    GAME_NAME = 'CartPole-v1'
+    feature_reward = 1
+    feature_action = 2
+    feature_state = (1,4)
+    FRONT_CNN = False
+    IMG_GET_RENDER = False
+elif CONF == 'cartpole_state_img':
+    GAME_NAME = 'CartPole-v1'
+    feature_reward = 1
+    feature_action = 2
+    feature_state = (1,64,64)
+    FRONT_CNN = True
+    IMG_GET_RENDER = True
+    
+class ReplayBuffer:
+    def __init__(self, capacity):
+        self.capacity = capacity
+        self.buffer = []
+        self.position = 0
+    def append(self, info):
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(None)
+        self.buffer[self.position] = info
+        self.position (self.position +1)%self.capacity
+
+    def sample(self,batch_size):
+        return random.sample(self.buffer,batch_size)
+
+    def __len__(self):
+        return len(self.buffer)
 
 
 
@@ -28,15 +77,21 @@ class Duelling_LSTM_DQN(torch.nn.Module):
         super(Duelling_LSTM_DQN, self).__init__()
         self.input_shape = state_shape
         self.action_dim = action_dim
-        self.front = torch.nn.Sequential(torch.nn.Conv2d(state_shape[0], 64, 8, stride=4),
-                                          torch.nn.ReLU(),
-                                          torch.nn.Conv2d(64, 64, 4, stride=2),
-                                          torch.nn.ReLU(),
-                                          torch.nn.Conv2d(64, 64, 3, stride=1),
-                                          torch.nn.ReLU())
-        self.size = (((state_shape[1]-1)//4)-3)//2-1
+        if FRONT_CNN:
+            self.front = torch.nn.Sequential(torch.nn.Conv2d(state_shape[0], 64, 8, stride=4),
+                                              torch.nn.ReLU(),
+                                              torch.nn.Conv2d(64, 64, 4, stride=2),
+                                              torch.nn.ReLU(),
+                                              torch.nn.Conv2d(64, 64, 3, stride=1),
+                                              torch.nn.ReLU())
+            self.size = (((state_shape[1]-1)//4)-3)//2-1
+            self.lstm_in_size = 64*self.size**2
+        else:
+            self.front = torch.nn.Sequential(torch.nn.Linear(feature_state[1] , hidden_dim),
+                                                      torch.nn.ReLU())
+            self.lstm_in_size = hidden_dim
         
-        self.lstm = torch.nn.LSTMCell(input_size=64*self.size*self.size , hidden_size=hidden_dim)
+        self.lstm = torch.nn.LSTMCell(input_size=self.lstm_in_size , hidden_size=hidden_dim)
 #        input of shape (batch, input_size): tensor containing input features
 #        hidden of shape (batch, hidden_size)
         
@@ -50,7 +105,7 @@ class Duelling_LSTM_DQN(torch.nn.Module):
     def forward(self, x, hidden):
         #assert x.shape == self.input_shape, "Input shape should be:" + str(self.input_shape) + "Got:" + str(x.shape)
         x = self.front(x)
-        x = x.view(-1, 64 * self.size * self.size)
+        x = x.view(-1,self.lstm_in_size)
         hidden = self.lstm(x, hidden)
         x=hidden[0]
         
@@ -65,7 +120,12 @@ class Duelling_LSTM_DQN(torch.nn.Module):
 #Q = Duelling_LSTM_DQN(env_conf['state_shape'], env_conf['action_dim'])
 
 def obs_preproc(x):
-    return torch.from_numpy(np.resize(x, feature_state)).float().unsqueeze(0)/256
+    if IMG_GET_RENDER ==False:  
+        return torch.from_numpy(np.resize(x, feature_state)).float().unsqueeze(0)
+    x = np.dot(x, np.array([[0.299, 0.587, 0.114]]).T)
+    x = np.reshape(x, (1,x.shape[1], x.shape[0]))
+    return torch.from_numpy(np.resize(x, feature_state)).float().unsqueeze(0)/255
+
     
 
 def soft_update(target, source, tau):
@@ -79,28 +139,51 @@ def hard_update(target, source):
             target_param.data.copy_(param.data)
 
 
-def actor_process(rank, shared_state, shared_queue, max_frame = 1 ):
-    print('{} actor process start '.format(rank))
+def actor_process(rank, shared_state, shared_queue, max_frame , dev, num_processes):
     
     Q_main = Duelling_LSTM_DQN(feature_state, feature_action)
     Q_main.load_state_dict(shared_state["Q_state"])
-    n_step = 5
     
+    env = gym.make(GAME_NAME)
+    policy_epsilon = 0.05**((rank+1)/num_processes))
+    win_r = vis.line(Y=torch.Tensor([0]), opts=dict(title ='reward'+str(policy_epsilon)))
+    print(f'#{rank} actor process start p:{policy_epsilon} ')
 
-    env = gym.make("Breakout-v0")
-    policy_epsilon = 0.3*rank
     action = 0
-    gamma_t = 0.997
+    gamma_t = def_gamma
     frame = 0
+    ttime = time.time()
+
     total_reward = []
-    ot= obs_preproc(env.reset())
-    hx = torch.zeros([1,hidden_dim])
-    cx = torch.zeros([1,hidden_dim])
+    prev_list = []
+    local_buf = []
+    dt = True
+
     while frame < max_frame:
-        copy_hx, copy_cx = hx.clone(), cx.clone()
-        
-        local_buf = []
-        for seq in range(sequences_length):
+        for seq in range(sequences_length//2):
+            if dt==True :
+                win_r = vis.line(X=torch.Tensor([frame]), Y=torch.Tensor([sum(total_reward)]), win= win_r , update ='append')
+                print(f'#{rank} frame:{frame:5d} total_reward: {sum(total_reward}, step:{len(total_reward)}, time:{time.time()-ttime}')
+                ttime = time.time()
+                #env reset
+                obs = env.reset()
+                if IMG_GET_RENDER:
+                    obs = env.render(mode='rgb_array')
+                ot = obs_preproc(obs)
+            
+                hx, cx = torch.zeros([1,hidden_dim]),torch.zeros([1,hidden_dim]) 
+                copy_hx, copy_cx =torch.zeros([1,hidden_dim]),torch.zeros([1,hidden_dim]) 
+                prev_hx, prev_cx =torch.zeros([1,hidden_dim]),torch.zeros([1,hidden_dim]) 
+             
+                prev_list = []
+                local_buf = []
+                total_reward=[]
+
+                dt = False
+                break 
+
+
+
             frame+=1
             with torch.no_grad():
                 Qt, (hx,cx) = Q_main(ot,(hx,cx))
@@ -110,37 +193,32 @@ def actor_process(rank, shared_state, shared_queue, max_frame = 1 ):
                 else:
                     action = random.randint(0,feature_action-1)
             
-            ot_1, rt,dt,_  = env.step(action)
-            env.render()
-            
+            obs, rt,dt,_  = env.step(action)
+            if IMG_GET_RENDER:
+                obs=env.render(mode='rgb_array')
+            ot_1 = obs_preproc(obs)
             total_reward.append(rt)
-            ot_1 = obs_preproc(ot_1)
             local_buf.append([ot,action,rt,gamma_t])
             
             ot = ot_1
-            if dt == True:
-                ot= obs_preproc(env.reset())
-                print('#{} total reward: {}'.format(rank,sum(total_reward)))
-                total_reward = []
-                break
-            if frame % 100 == 0:
+            if frame % def_actor_update_step == 0:
                 Q_main.load_state_dict(shared_state["Q_state"])
-#                hard_update(Q_main,shared_state["Q_state"])
-        if seq>= burn_in_length + n_step :
-            for s in range(seq+1,sequences_length):
-                local_buf.append([ot,action,rt,0])
-        state, action, reward,gamma = map(np.stack,zip(*local_buf))
-        local_buf=[]
-        shared_queue.put([state,reward,gamma,copy_hx,copy_cx])
-            
         
+        prev_list.extend(local_buf)
+        if len(prev_list) > burn_in_length+n_step:
+            for s in range( len(prev_list) ,sequences_length):
+                prev_list.append([ot,action,0.,0.])
+            state, action, reward,gamma = map(np.stack,zip(*prev_list))
+            while shared_queue.qsize() > 50:
+                print(f'#{rank} actor sleep')
+                time.sleep(1)
+            shared_queue.put([state,action,reward,gamma,prev_hx,prev_cx])
         
-#        global_buf.append(Global_Transition(seq,local_buf,copy_hidden,dt))
-        
-                
-    print('{} actor process done '.format(rank))
-#        if dt == True:
-#            break
+        prev_hx, prev_cx = copy_hx.clone(), copy_cx.clone()
+        copy_hx, copy_cx = hx.clone(), cx.clone()
+        prev_list = local_buf
+        local_buf = []
+
         
 def h_func(x):
     epsilon= 10e-2
@@ -149,40 +227,40 @@ def h_inv_func(x):
     epsilon= 10e-2
     return torch.sign(x) * ((((torch.sqrt(1+4*epsilon*(torch.abs(x)+1+epsilon))-1)/(2*epsilon))**2)-1)    
     
-def learner_process(rank , shared_state, shared_queue, max_frame =1 ):
-    Q_main = Duelling_LSTM_DQN(feature_state, feature_action)
-    Q_target = Duelling_LSTM_DQN(feature_state, feature_action)
+def learner_process(rank , shared_state, shared_queue, max_frame ,dev, dev_cpu ):
+    print(f'#{rank} learner process start ')
+
+    Q_main = Duelling_LSTM_DQN(feature_state, feature_action).to(dev)
+    Q_target = Duelling_LSTM_DQN(feature_state, feature_action).to(dev)
     Q_main.load_state_dict(shared_state["Q_state"])
     Q_target.load_state_dict(shared_state["Q_state"])
     
     
-    value_optimizer  = optim.Adam(Q_main.parameters(),  lr=0.0001)
-    global_buf = deque(maxlen = 10000)
+    value_optimizer  = optim.Adam(Q_main.parameters(),  lr=def_lr)
+    global_buf = ReplayBuffer(def_global_buf_maxlen)
 
-    n_step = 5
-    gamma = 0.997
     frame = 0
-    global_buf = []
-    
-    i=0
-    while shared_queue.qsize() <= batch_size:
-        i+=1
+    while len(global_buf) < train_start_size:
+        print(f'\r g_buf len :{len(global_buf)}/{train_start_size}',end='\r')
+        global_buf.append(shared_queue.get())
     
     
     while frame<max_frame:
+        time.sleep(learner_frame_interval)
+
         for i in range(shared_queue.qsize()):
             global_buf.append(shared_queue.get())
         frame+=1
 
         batch = random.sample(global_buf, batch_size)
         state, action, reward, gamma, copy_hx, copy_cx = map(np.stack, zip(*batch))
-        st = torch.from_numpy(state).view(sequences_length,batch_size,feature_state[0],feature_state[1],feature_state[2]).float()
-        at = torch.from_numpy(action).view(sequences_length,batch_size).long()
-        rt = torch.from_numpy(reward).view(sequences_length,batch_size).float()
-        gamt = torch.from_numpy(gamma).view(sequences_length,batch_size).float()
+        st = torch.from_numpy(state).reshape((sequences_length,batch_size)+feature_state).float().to(dev)
+        at = torch.from_numpy(action).reshape((sequences_length,batch_size)).long().to(dev)
+        rt = torch.from_numpy(reward).reshape((sequences_length,batch_size)).float().to(dev)
+        gamt = torch.from_numpy(gamma).reshape((sequences_length,batch_size)).float().to(dev)
         
-        hx_m = torch.from_numpy(copy_hx).view(batch_size,hidden_dim)
-        cx_m = torch.from_numpy(copy_cx).view(batch_size,hidden_dim)
+        hx_m = torch.from_numpy(copy_hx).reshape((batch_size,hidden_dim)).to(dev)
+        cx_m = torch.from_numpy(copy_cx).reshape((batch_size,hidden_dim)).to(dev)
         
         hx_t = hx_m.clone()
         cx_t = cx_m.clone()
@@ -199,14 +277,14 @@ def learner_process(rank , shared_state, shared_queue, max_frame =1 ):
         
         Q_tilda = []
         for i in range(burn_in_length, sequences_length):
-            target_Q_v, (hx_m, cx_m) = Q_target(st[i], (hx_m, cx_m))
+            target_Q_v, (hx_double_t,cx_double_t) = Q_target(st[i], (hx_double_t, cx_double_t))
             a_star = torch.argmax(target_Q_v, dim =1)
             
-            main_Q_v , (hx_t, cx_t) = Q_main(st[i], (hx_t, cx_t))
-            
+            main_Q_v , (hx_double_m,cx_double_m) = Q_main(st[i], (hx_double_m, cx_double_m))
             Q_tilda.append(main_Q_v.gather(1,a_star.view(batch_size,-1)))
             
-        loss = 0
+
+        loss = torch.zeros([1]).to(dev)
         for i in range(burn_in_length, sequences_length-n_step):
             sub_ten = torch.stack([rt[i+k]*(gamt[i+k]**k) for k in range(n_step)],dim=1)
             rt_sum = torch.sum(sub_ten, dim=1)
@@ -221,115 +299,28 @@ def learner_process(rank , shared_state, shared_queue, max_frame =1 ):
         value_optimizer.zero_grad()
         loss.backward()
         value_optimizer.step()
-        print('loss:',loss.item())
-        
-        
-        tau = 0.3
-        for target_param, param in zip(Q_target.parameters(),Q_main.parameters()):
-            target_param.data.copy_( target_param.data * (1.0 - tau) + param.data * tau )
-        shared_state["Q_state"] = Q_main.state_dict()
+        print(f'\r#{rank} frame:{frame:5d} loss:{loss.itme()} g_buf_size:{len(global_buf):6d}/{def_global_buf_maxlen}',end='\r')
 
-        
-        for bat in range(batch_size):
-            
-            while True:
-                idx = random.randint(0,len(global_buf)-1-1)
-                if global_buf[idx].done == False:
-                    break
-            
-            
-            with torch.no_grad():
-                #burn in
-                burn_list = global_buf[idx].local_buf
-                burn_seq = global_buf[idx].seq
-                
-                hidden_main = (global_buf[idx].hidden[0].clone(),global_buf[idx].hidden[1].clone())
-                hidden_target = (global_buf[idx].hidden[0].clone(),global_buf[idx].hidden[1].clone())
-                
-                
-                ot_burn = [ burn_list[sequences_length - burn_in_length +k].S for k in range(burn_in_length)]
-            
-                for i in range(burn_in_length):
-                    _, hidden_main = Q_main(ot_burn[i], hidden_main)
-                    _, hidden_target = Q_main(ot_burn[i], hidden_target)
-                
-                
-                stored_hidden_main = (hidden_main[0].clone(),hidden_main[1].clone())
-                stored_hidden_target = (hidden_target[0].clone(),hidden_target[1].clone())
-    
-                
-                #train
-                train_list = global_buf[idx+1].local_buf
-                train_seq = global_buf[idx+1].seq
-                
-                St = [train_list[i].S for i in range(train_seq)]
-                At = torch.Tensor([train_list[i].A for i in range(train_seq)]).long()
-                Rt = torch.Tensor([train_list[i].R for i in range(train_seq)])
-                Gamma_t = torch.Tensor([train_list[i].Gamma for i in range(train_seq)])
-                
-                
-                
-                
-                #calc Q tilda
-                Q_tilda = []
-                for i in range(train_seq):
-                    target_Q_v, hidden_target = Q_target(St[i], hidden_target)
-                    a_star = torch.argmax(target_Q_v, dim =1)
-                    
-                    main_Q_v , hidden_main = Q_main(St[i], hidden_main)
-                    Q_tilda.append(torch.index_select(main_Q_v ,1,a_star))
-    
-                
-            
-            
-            
-            hidden_main = (stored_hidden_main[0].clone(),stored_hidden_main[1].clone())
-            hidden_target = (stored_hidden_target[0].clone(),stored_hidden_target[1].clone())
-            
-            
-            
-            for i in range(train_seq-n_step):
-                rt_sum = torch.sum( torch.stack([Rt[i+k]*gamma**k for k in range(n_step)]) )
-                inv_scaling_Q = h_inv_func( Q_tilda[i+n_step] )
-                y_t_hat = h_func(rt_sum + gamma**n_step * inv_scaling_Q)
-                
-                main_Q_value, hidden_main = Q_main(St[i] , hidden_main)
-                
-                loss = 1/2*(y_t_hat - torch.index_select(main_Q_value, 1, At[i] ) )**2
-                
-                T_loss += loss
-                
-                
-        value_optimizer.zero_grad()        
-        (T_loss/batch_size).backward()
-        value_optimizer.step()
-            
-        print('batch:{} T_loss:{} '.format(bat,T_loss.item()))
-        if frame % 3 == 0:
-            tau = 0.3
+
+        if frame%def_learner_update_step ==0:
+        tau = def_soft_update_tau
             for target_param, param in zip(Q_target.parameters(),Q_main.parameters()):
                 target_param.data.copy_( target_param.data * (1.0 - tau) + param.data * tau )
+            state = Q_main.state_dict()
+            for k,v in Q_main.state_dict().items():
+                state[k] = v.to(dev_cpu)
+
             shared_state["Q_state"] = Q_main.state_dict()
-#for i in range(1000):
-#    actor_process(global_buf)
-#    learner_process(global_buf)
-    
 
-
-#
-#mp_manager = mp.Manager()
-#shared_state = mp_manager.dict()
-#shared_mem = mp_manager.Queue()
-#
-#
-#ReplayManager = BaseManager()
-#ReplayManager.start()
-#replay_mem = ReplayManager.Memory(replay_params["soft_capacity"],  replay_params)
-#
-#    
+        
 
 if __name__ == '__main__':
     
+    use_cuda = torch.cuda.is_available()
+    dev_cpu = torch.device('cpu')
+    dev_gpu = torch.device('cuda' if use_cuda else 'cpu')
+    print(dev_cpu, dev_gpu)
+
     Q_main = Duelling_LSTM_DQN(feature_state, feature_action)
 
     num_processes = 1
@@ -338,21 +329,24 @@ if __name__ == '__main__':
     shared_state = manager.dict()
     shared_queue = manager.Queue()
     shared_state["Q_state"] = Q_main.state_dict()
-    actor_process(0, shared_state, shared_queue,1000)
-    learner_process(0, shared_state, shared_queue,10)
     
-#    learner_procs = mp.Process(target=actor_process, args=(i, shared_state, shared_queue,))
-#    learner_procs.start()
-#    
-#    actor_procs = []
-#    for i in range(num_processes):
-#        print(i)
-#        actor_proc = mp.Process(target=actor_process, args=(i, shared_state, shared_queue,))
-#        actor_proc.start()
-#        actor_procs.append(actor_proc)
-#    for act in actor_procs:
-#        act.join()    
-#    learner_procs.join()
+    USE_MP = False
+    if USE_MP == False:
+        actor_process(0, shared_state, shared_queue,1000, dev_cpu, num_processes))
+        learner_process(0, shared_state, shared_queue,10, dev_gpu, dev_cpu))
+    else: 
+        learner_procs = mp.Process(target=actor_process, args=(999, shared_state, shared_queue,100000,dev_gpu,dev_cpu,))
+        learner_procs.start()
+        
+        actor_procs = []
+        for i in range(num_processes):
+            print(i)
+            actor_proc = mp.Process(target=actor_process, args=(i, shared_state, shared_queue,1000000,dev_cpu,num_process))
+            actor_proc.start()
+            actor_procs.append(actor_proc)
+        for act in actor_procs:
+            act.join()    
+        learner_procs.join()
     
 
 
