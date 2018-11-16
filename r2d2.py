@@ -19,6 +19,7 @@ vis = visdom.Visdom()
 vis.close()
 
 
+USE_MP = False
 
 batch_size = 32
 burn_in_length = 4
@@ -33,7 +34,7 @@ def_soft_update_tau = 0.3
 def_learner_update_step = 50
 def_actor_update_step = 500
 train_start_size = 500
-num_process = 8
+num_processes = 8
 learner_frame_interval = 0.01 #sec
 
 CONF = 'cartpole_state_4'
@@ -62,7 +63,7 @@ class ReplayBuffer:
         if len(self.buffer) < self.capacity:
             self.buffer.append(None)
         self.buffer[self.position] = info
-        self.position (self.position +1)%self.capacity
+        self.position = (self.position +1)%self.capacity
 
     def sample(self,batch_size):
         return random.sample(self.buffer,batch_size)
@@ -145,7 +146,7 @@ def actor_process(rank, shared_state, shared_queue, max_frame , dev, num_process
     Q_main.load_state_dict(shared_state["Q_state"])
     
     env = gym.make(GAME_NAME)
-    policy_epsilon = 0.05**((rank+1)/num_processes))
+    policy_epsilon = 0.05**((rank+1)/num_processes)
     win_r = vis.line(Y=torch.Tensor([0]), opts=dict(title ='reward'+str(policy_epsilon)))
     print(f'#{rank} actor process start p:{policy_epsilon} ')
 
@@ -163,7 +164,7 @@ def actor_process(rank, shared_state, shared_queue, max_frame , dev, num_process
         for seq in range(sequences_length//2):
             if dt==True :
                 win_r = vis.line(X=torch.Tensor([frame]), Y=torch.Tensor([sum(total_reward)]), win= win_r , update ='append')
-                print(f'#{rank} frame:{frame:5d} total_reward: {sum(total_reward}, step:{len(total_reward)}, time:{time.time()-ttime}')
+                print(f'#{rank} frame:{frame:5d} total_reward: {sum(total_reward)}, step:{len(total_reward)}, time:{time.time()-ttime}')
                 ttime = time.time()
                 #env reset
                 obs = env.reset()
@@ -227,7 +228,7 @@ def h_inv_func(x):
     epsilon= 10e-2
     return torch.sign(x) * ((((torch.sqrt(1+4*epsilon*(torch.abs(x)+1+epsilon))-1)/(2*epsilon))**2)-1)    
     
-def learner_process(rank , shared_state, shared_queue, max_frame ,dev, dev_cpu ):
+def learner_process(rank , shared_state, shared_queue, max_frame ,dev ):
     print(f'#{rank} learner process start ')
 
     Q_main = Duelling_LSTM_DQN(feature_state, feature_action).to(dev)
@@ -252,7 +253,8 @@ def learner_process(rank , shared_state, shared_queue, max_frame ,dev, dev_cpu )
             global_buf.append(shared_queue.get())
         frame+=1
 
-        batch = random.sample(global_buf, batch_size)
+        batch = global_buf.sample(batch_size)
+
         state, action, reward, gamma, copy_hx, copy_cx = map(np.stack, zip(*batch))
         st = torch.from_numpy(state).reshape((sequences_length,batch_size)+feature_state).float().to(dev)
         at = torch.from_numpy(action).reshape((sequences_length,batch_size)).long().to(dev)
@@ -299,16 +301,16 @@ def learner_process(rank , shared_state, shared_queue, max_frame ,dev, dev_cpu )
         value_optimizer.zero_grad()
         loss.backward()
         value_optimizer.step()
-        print(f'\r#{rank} frame:{frame:5d} loss:{loss.itme()} g_buf_size:{len(global_buf):6d}/{def_global_buf_maxlen}',end='\r')
+        print(f'\r#{rank} frame:{frame:5d} loss:{loss.item()} g_buf_size:{len(global_buf):6d}/{def_global_buf_maxlen}',end='\r')
 
 
         if frame%def_learner_update_step ==0:
-        tau = def_soft_update_tau
+            tau = def_soft_update_tau
             for target_param, param in zip(Q_target.parameters(),Q_main.parameters()):
                 target_param.data.copy_( target_param.data * (1.0 - tau) + param.data * tau )
-            state = Q_main.state_dict()
+            state = dict()
             for k,v in Q_main.state_dict().items():
-                state[k] = v.to(dev_cpu)
+                state[k] = v.cpu()
 
             shared_state["Q_state"] = Q_main.state_dict()
 
@@ -323,25 +325,22 @@ if __name__ == '__main__':
 
     Q_main = Duelling_LSTM_DQN(feature_state, feature_action)
 
-    num_processes = 1
-    
     manager = mp.Manager()
     shared_state = manager.dict()
     shared_queue = manager.Queue()
     shared_state["Q_state"] = Q_main.state_dict()
     
-    USE_MP = False
     if USE_MP == False:
-        actor_process(0, shared_state, shared_queue,1000, dev_cpu, num_processes))
-        learner_process(0, shared_state, shared_queue,10, dev_gpu, dev_cpu))
+        actor_process(0, shared_state, shared_queue,100, dev_cpu, num_processes)
+        learner_process(0, shared_state, shared_queue,2, dev_gpu)
     else: 
-        learner_procs = mp.Process(target=actor_process, args=(999, shared_state, shared_queue,100000,dev_gpu,dev_cpu,))
+        learner_procs = mp.Process(target=learner_process, args=(999, shared_state, shared_queue,100000,dev_gpu,))
         learner_procs.start()
         
         actor_procs = []
         for i in range(num_processes):
             print(i)
-            actor_proc = mp.Process(target=actor_process, args=(i, shared_state, shared_queue,1000000,dev_cpu,num_process))
+            actor_proc = mp.Process(target=actor_process, args=(i, shared_state, shared_queue,1000000,dev_cpu,num_processes))
             actor_proc.start()
             actor_procs.append(actor_proc)
         for act in actor_procs:
