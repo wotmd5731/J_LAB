@@ -312,7 +312,7 @@ def learner_process(rank , shared_state, shared_queue, max_frame ,dev ):
             for k,v in Q_main.state_dict().items():
                 state[k] = v.cpu()
 
-            shared_state["Q_state"] = Q_main.state_dict()
+            shared_state["Q_state"] = state
 
         
 
