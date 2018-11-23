@@ -14,6 +14,7 @@ from copy import deepcopy
 #from replay_memory import ReplayMemory
 from models import ActorNet, CriticNet
 
+import pickle
 
 
 
@@ -83,19 +84,23 @@ class Actor:
         self.max_frame = config['actor_max_frame']
         self.gamma = config['gamma']
         self.actor_parameter_update_interval = config['actor_parameter_update_interval']
-#        self.model_path = './model_data/'
+        self.model_path = './'
+        self.memory_path = './'
         
         self.actor = ActorNet(config['obs_space'], config['action_space'],dev).to(self.dev)
         self.target_actor = ActorNet(config['obs_space'], config['action_space'],dev).to(self.dev)
         self.critic = CriticNet(config['obs_space'], config['action_space'],dev).to(self.dev)
         self.target_critic = CriticNet(config['obs_space'], config['action_space'],dev).to(self.dev)
         
-        
         self.actor.load_state_dict(self.shared_state["actor"].state_dict())
         self.target_actor.load_state_dict(self.shared_state["target_actor"].state_dict())
         self.critic.load_state_dict(self.shared_state["critic"].state_dict())
         self.target_critic.load_state_dict(self.shared_state["target_critic"].state_dict())
-        
+
+#        self.actor.load_state_dict(self.shared_state["actor"])
+#        self.target_actor.load_state_dict(self.shared_state["target_actor"])
+#        self.critic.load_state_dict(self.shared_state["critic"])
+#        self.target_critic.load_state_dict(self.shared_state["target_critic"])
         
         
 #        self.load_model()
@@ -103,26 +108,45 @@ class Actor:
         
     def PrePro(self,obs):
         return torch.from_numpy(obs).detach().float().reshape((1,self.obs_size)).to(self.dev)
-
+   
+    def save_memory(self):
+        
+        model_dict = {'sequence': self.sequence,
+                      'recurrent_state': self.recurrent_state,
+                      'priority': self.priority,
+                      }
+        
+        torch.save(model_dict, self.memory_path + 'memory.pt')
+    
+    
+#    with open('outfile', 'wb') as fp:
+#    pickle.dump(itemlist, fp)
+#    
+#    with open ('outfile', 'rb') as fp:
+#    itemlist = pickle.load(fp)
+    
+    
     def load_model(self):
         if os.path.isfile(self.model_path + 'model.pt'):
             while True:
                 try:
                     # TODO: Delete
-                    self.actor = ActorNet(self.obs_size, self.action_size, self.actor_id%2+1).cuda().eval()
-                    self.target_actor = deepcopy(self.actor)
-                    self.critic = CriticNet(self.obs_size, self.action_size, self.actor_id%2+1).cuda().eval()
-                    self.target_critic = deepcopy(self.critic)
+#                    self.actor = ActorNet(self.obs_size, self.action_size, self.actor_id%2+1).cuda().eval()
+#                    self.target_actor = deepcopy(self.actor)
+#                    self.critic = CriticNet(self.obs_size, self.action_size, self.actor_id%2+1).cuda().eval()
+#                    self.target_critic = deepcopy(self.critic)
                     #model_dict = torch.load(self.model_path + 'model.pt', map_location={'cuda:0':'cuda:{}'.format(self.actor_id%2+1)})
+                    print('waiting  model.pt')
                     model_dict = torch.load(self.model_path + 'model.pt')
                     self.actor.load_state_dict(model_dict['actor'])
                     self.target_actor.load_state_dict(model_dict['target_actor'])
                     self.critic.load_state_dict(model_dict['critic'])
                     self.target_critic.load_state_dict(model_dict['target_critic'])
-                    self.actor.cuda(self.actor_id%2+1)
-                    self.target_actor.cuda(self.actor_id%2+1)
-                    self.critic.cuda(self.actor_id%2+1)
-                    self.target_critic.cuda(self.actor_id%2+1)
+                    self.actor.to(self.dev)
+                    self.target_actor.to(self.dev)
+                    self.critic.to(self.dev)
+                    self.target_critic.to(self.dev)
+                    
                 except:
                     sleep(np.random.rand() * 5 + 2)
                 else:
@@ -170,14 +194,17 @@ class Actor:
                 if i >= self.sequence_length:
                     self.priority.append(calc_priority(self.td_loss))
             
+            
+            
 
+    
     def run(self):
         frame = 0
         
         while frame  < self.max_frame:
-            self.shared_state['frame'][self.actor_id]=frame
-            while self.shared_state['sleep'][self.actor_id] :
-                sleep(0.5)
+#            self.shared_state['frame'][self.actor_id]=frame
+#            while self.shared_state['sleep'][self.actor_id] :
+#                sleep(0.5)
             
             st, rt, dt  = self.env.reset()
             
@@ -225,21 +252,37 @@ class Actor:
 
                 if frame % self.actor_parameter_update_interval == 0:
                     print('actor_update',self.actor.l1.weight.data[0])
+#                    self.actor.load_state_dict(self.shared_state["actor"])
+#                    self.target_actor.load_state_dict(self.shared_state["target_actor"])
+#                    self.critic.load_state_dict(self.shared_state["critic"])
+#                    self.target_critic.load_state_dict(self.shared_state["target_critic"])
+        
                     self.actor.load_state_dict(self.shared_state["actor"].state_dict())
                     self.target_actor.load_state_dict(self.shared_state["target_actor"].state_dict())
                     self.critic.load_state_dict(self.shared_state["critic"].state_dict())
                     self.target_critic.load_state_dict(self.shared_state["target_critic"].state_dict())
-                    
 #                    self.load_model()
+
 
             if len(self.sequence) >= self.sequence_length:
                 self.sequence.extend([(st, action, 0., 0.) for i in range(self.n_step)])
                 self.calc_nstep_reward()
                 self.calc_priorities()
-                while self.shared_queue.qsize() > 100:
-                    print('shared Queue  sleep')
-                    time.sleep(1)
-                self.shared_queue.put([self.sequence, self.recurrent_state, self.priority])
+                
+                while self.shared_state['data'][self.actor_id]:
+                    sleep(0.1)
+                
+                self.shared_state['data'][self.actor_id]=True
+                with open('actor{}.mt'.format(self.actor_id), 'wb') as f:
+                    pickle.dump([self.sequence, self.recurrent_state, self.priority], f)
+                
+                
+                
+#                while self.shared_queue.qsize() > 100:
+#                    print('shared Queue  sleep')
+#                    time.sleep(1)
+#                self.shared_queue.put([self.sequence, self.recurrent_state, self.priority])
+                
 #                print(len(self.sequence),len(self.recurrent_state),len(self.priority))
 #                self.memory.add(self.sequence, self.recurrent_state, self.priority)
                 
@@ -260,13 +303,15 @@ if __name__ == '__main__':
             'game_name':'Pendulum-v0',
             'action_space':1,
             'obs_space':(3),
-            'burn_in_length':5,
-            'learning_length':10,
-            'n_step':3,
-            'memory_sequence_size':1000,
-            'actor_parameter_update_interval':500,
+            'burn_in_length':20,
+            'learning_length':40,
+            'n_step':5,
+            'memory_sequence_size':1000000,
+            'actor_parameter_update_interval':600,
             'gamma':0.997,
-            'actor_max_frame':1000,
+            'actor_max_frame':200000,
+            'learner_max_frame':500,
+            'batch_size':32,
             }
 
 
@@ -279,19 +324,42 @@ if __name__ == '__main__':
     shared_state = dict()
 #    shared_queue = manager.Queue()
     shared_queue = mp.Queue()
-        
+    num_processes = 5
     #shared_state["Q_state"]
     shared_state["actor"] = ActorNet(config['obs_space'], config['action_space'],dev_cpu).share_memory()
     shared_state["critic"] = CriticNet(config['obs_space'], config['action_space'],dev_cpu).share_memory()
     shared_state["target_actor"] = ActorNet(config['obs_space'], config['action_space'],dev_cpu).share_memory()
     shared_state["target_critic"] = CriticNet(config['obs_space'], config['action_space'],dev_cpu).share_memory()
     
+#    
+#    shared_state["actor"] = ActorNet(config['obs_space'], config['action_space'],dev_cpu).state_dict()
+#    shared_state["critic"] = CriticNet(config['obs_space'], config['action_space'],dev_cpu).state_dict()
+#    shared_state["target_actor"] = ActorNet(config['obs_space'], config['action_space'],dev_cpu).state_dict()
+#    shared_state["target_critic"] = CriticNet(config['obs_space'], config['action_space'],dev_cpu).state_dict()
     
     
-    actor_process(0,config,dev_cpu,shared_state,shared_queue)
-    print(shared_queue.qsize())
-    for i in range(shared_queue.qsize()):
-        arr = shared_queue.get()
-        print(len(arr[0]),len(arr[1]),len(arr[2]))
-        
-        
+    shared_state["frame"] = mp.Array('i', [0 for i in range(num_processes)])
+    shared_state["sleep"] = mp.Array('i', [0 for i in range(num_processes)])
+#    shared_state["frame"] = [0 for i in range(num_processes)]
+#    shared_state["sleep"] = [0 for i in range(num_processes)]
+    
+    
+#    for i in range(10):
+#        actor_process(0,config,dev_cpu,shared_state,shared_queue)
+#        actor_process(1,config,dev_cpu,shared_state,shared_queue)
+#        actor_process(2,config,dev_cpu,shared_state,shared_queue)
+#        learner_process(1,config,dev_cpu,shared_state,shared_queue)
+
+
+
+#    learner_procs = mp.Process(target=learner_process, args=(0, config,dev_gpu,shared_state,shared_queue))
+#    learner_procs.start()
+    
+    actor_procs = []
+    for i in range(1, num_processes):
+        actor_proc = mp.Process(target=actor_process, args=(i,config,dev_cpu,shared_state,shared_queue))
+        actor_proc.start()
+        actor_procs.append(actor_proc)
+
+#    learner_procs.join()
+    actor_procs[0].join()
