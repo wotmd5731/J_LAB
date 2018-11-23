@@ -36,7 +36,7 @@ class LearnerReplayMemory:
     
     def size(self):
 #        return sum([len(self.memory[i]) for i in range(len(self.memory))])
-        return len(self.total_priority)
+        return len(self.memory)
     
     def get(self, index):
         return self.memory[index]
@@ -101,9 +101,11 @@ class LearnerReplayMemory:
         self.priority.append(data[2])
         self.total_priority.append(sum(data[2]))
 
-        self.sequence_counter += sum([len(data[0]) - (self.sequence_length+self.n_step-1) ])
+#        self.sequence_counter += sum([len(data[0]) - (self.sequence_length+self.n_step-1) ])
+        self.sequence_counter += 1
         while self.sequence_counter > self.memory_sequence_size:
-            self.sequence_counter -= len(self.memory.popleft()) - (self.sequence_length)
+#            self.sequence_counter -= len(self.memory.popleft()) - (self.sequence_length)
+            self.sequence_counter -= 1
             self.recurrent_state.popleft()
             self.priority.popleft()
             self.total_priority.popleft()
@@ -164,7 +166,6 @@ class Learner:
         
         
         
-        self.epsilon = 1 
         self.n_actions = 1
         self.max_frame = config['learner_max_frame']
     
@@ -174,13 +175,13 @@ class Learner:
 
         self.model_path = './'
 #        self.memory_path = './memory_data/'
-        self.model_save_interval = 10 # 50
-        self.memory_update_interval = 10 # 50
+#        self.model_save_interval = 10 # 50
+        self.learner_parameter_update_interval = config['learner_parameter_update_interval'] # 50
         self.target_update_inverval = 500 # 100
 
-        self.gamma = 0.997
-        self.actor_lr = 1e-4
-        self.critic_lr = 1e-3
+        self.gamma = config['gamma']
+        self.actor_lr = config['actor_lr']
+        self.critic_lr = config['critic_lr']
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=self.actor_lr)
         self.actor_criterion = nn.MSELoss()
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=self.critic_lr)
@@ -212,34 +213,33 @@ class Learner:
 #    
 #        print(self.shared_queue.qsize())
 #        
-        
-                
-                
-#                
-#        while  self.memory.size() < self.batch_size:
-#            sleep(1)
+        while  self.memory.size() < self.batch_size :
+#            self.memory.append(self.shared_queue.get(block=True))
+            self.memory.append(self.shared_queue.get())
+            
+            
 #            print('waiting  shared q {}/{}'.format(self.memory.size(),self.batch_size))
 #            for i in range(self.shared_queue.qsize()):
-#                self.memory.append(self.shared_queue.get())
+             
         
-        while True:
-            sleep(0.4)
-            count = [self.shared_state['data'][i] for i in range(self.n_actor)]
-            if sum(count) == self.n_actor:
-                break
+#        while True:
+#            sleep(0.4)
+#            count = [self.shared_state['data'][i] for i in range(self.n_actor)]
+#            if sum(count) == self.n_actor:
+#                break
             
             
-        
+        count_mem=0
         frame = 0
         while frame  < self.max_frame:
             
-            if frame %10 ==0:
-                for i in range(self.n_actor):
-                    if self.shared_state['data'][i]==True:
-                        with open('actor{}.mt'.format(self.actor_id), 'rb') as f:
-                            data = pickle.load(f)
-                            self.memory.append(data)
-                        self.shared_state['data'][i]=False
+#            if frame %10 ==0:
+#                for i in range(self.n_actor):
+#                    if self.shared_state['data'][i]==True:
+#                        with open('actor{}.mt'.format(self.actor_id), 'rb') as f:
+#                            data = pickle.load(f)
+#                            self.memory.append(data)
+#                        self.shared_state['data'][i]=False
                     
                 
 #            print('waiting  shared q {}/{}'.format(self.memory.size(),self.batch_size))
@@ -247,13 +247,17 @@ class Learner:
 #            self.shared_state['frame'][self.id]=frame
 #            while self.shared_state['sleep'][self.id] :
 #                sleep(0.5)
-                
-#            for i in range(self.shared_queue.qsize()):
-##                global_buf.append(self.shared_queue.get())
+            if self.shared_queue.qsize()==0 and count_mem <0:
+                self.memory.append(self.shared_queue.get(block=True))
 #                self.memory.append(self.shared_queue.get())
+                
+            for i in range(self.shared_queue.qsize()):
+##                global_buf.append(self.shared_queue.get())
+                self.memory.append(self.shared_queue.get())
+                count_mem += 5
             frame+=1
             
-            
+            count_mem -= 1
             
             episode_index, sequence_index, obs_seq, action_seq, reward_seq, gamma_seq, a_state, ta_state, c_state, tc_state = self.memory.sample()
 
@@ -292,7 +296,7 @@ class Learner:
             # update actor
             self.actor.reset_state()
             self.critic.reset_state()
-            actor_loss = torch.zeros(self.learning_length * self.batch_size, self.n_actions).cuda()
+            actor_loss = torch.zeros(self.learning_length * self.batch_size, self.n_actions).to(self.dev)
             for i in range(self.learning_length):
                 obs_i = i + self.burn_in_length
                 action = self.actor(obs_seq[obs_i])
@@ -321,8 +325,8 @@ class Learner:
 #            if frame % self.model_save_interval == 0:
 #                self.save_model()
 
-            if frame % self.memory_update_interval == 0:
-                print('learner update ')
+            if frame % self.learner_parameter_update_interval == 0:
+#                print('learner update ')
                 
 #                [self.shared_state["actor"][k] = v.cpu() for k,v in self.actor.state_dict().item() ]
 #                [self.shared_state["target_actor"][k] = v.cpu() for k,v in self.target_actor.state_dict().item() ]
@@ -343,7 +347,7 @@ class Learner:
 #                self.shared_state["target_actor"] = self.target_actor.state_dict()
 #                self.shared_state["critic"] = self.critic.state_dict()
 #                self.shared_state["target_critic"] = self.target_critic.state_dict()
-                
+                print('learner_update',self.actor.l1.weight.data[0])
                 
                 self.shared_state["actor"].load_state_dict(self.actor.state_dict())
                 self.shared_state["critic"].load_state_dict(self.critic.state_dict())

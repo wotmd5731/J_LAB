@@ -56,7 +56,7 @@ def h_inv_func(x,epsilon= 10e-2):
 
 
 class Actor:
-    def __init__(self, actor_id,config,dev,shared_state,shared_queue):
+    def __init__(self, actor_id,config,dev,shared_state,shared_queue,eps):
 #        self.env = suite.load(domain_name="walker", task_name="run")
 #        self.action_size = self.env.action_spec().shape[0]
 #        self.obs_size = get_obs(self.env.reset().observation).shape[1]
@@ -104,7 +104,7 @@ class Actor:
         
         
 #        self.load_model()
-        self.epsilon = 1 
+        self.epsilon = eps 
         
     def PrePro(self,obs):
         return torch.from_numpy(obs).detach().float().reshape((1,self.obs_size)).to(self.dev)
@@ -235,7 +235,7 @@ class Actor:
                 _ = self.critic(self.PrePro(st), action)
                 _ = self.target_critic(self.PrePro(st), target_action)
 
-                action = action.detach().item() +  np.random.normal(0, 0.3, (self.action_size))
+                action = action.detach().item() +  np.random.normal(0, self.epsilon, (self.action_size))
                 action = np.clip(action, -1, 1)
 
                 st_1, rt, dt = self.env.step(action)
@@ -269,19 +269,19 @@ class Actor:
                 self.calc_nstep_reward()
                 self.calc_priorities()
                 
-                while self.shared_state['data'][self.actor_id]:
-                    sleep(0.1)
+#                while self.shared_state['data'][self.actor_id]:
+#                    sleep(0.1)
                 
-                self.shared_state['data'][self.actor_id]=True
-                with open('actor{}.mt'.format(self.actor_id), 'wb') as f:
-                    pickle.dump([self.sequence, self.recurrent_state, self.priority], f)
+#                self.shared_state['data'][self.actor_id]=True
+#                with open('actor{}.mt'.format(self.actor_id), 'wb') as f:
+#                    pickle.dump([self.sequence, self.recurrent_state, self.priority], f)
                 
                 
                 
 #                while self.shared_queue.qsize() > 100:
 #                    print('shared Queue  sleep')
 #                    time.sleep(1)
-#                self.shared_queue.put([self.sequence, self.recurrent_state, self.priority])
+                self.shared_queue.put([self.sequence, self.recurrent_state, self.priority],block=True)
                 
 #                print(len(self.sequence),len(self.recurrent_state),len(self.priority))
 #                self.memory.add(self.sequence, self.recurrent_state, self.priority)
@@ -293,8 +293,8 @@ class Actor:
 #            if len(self.memory.memory) > self.memory_save_interval:
 #                self.memory.save(self.actor_id)
 
-def actor_process(actor_id,config,dev_cpu,shared_state,shared_queue):
-    actor = Actor(actor_id,config,dev_cpu,shared_state,shared_queue)
+def actor_process(actor_id,config,dev_cpu,shared_state,shared_queue,eps):
+    actor = Actor(actor_id,config,dev_cpu,shared_state,shared_queue,eps)
     actor.run()
     
     
@@ -309,8 +309,8 @@ if __name__ == '__main__':
             'memory_sequence_size':1000000,
             'actor_parameter_update_interval':600,
             'gamma':0.997,
-            'actor_max_frame':200000,
-            'learner_max_frame':500,
+            'actor_max_frame':200,
+            'learner_max_frame':1,
             'batch_size':32,
             }
 
