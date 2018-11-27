@@ -36,6 +36,8 @@ if __name__ == '__main__':
             'learner_max_frame':200000,
             'batch_size':16,
             'num_processes':8,
+            'num_envs':1,
+            'learner_actor_rate':20,
             }
 
     num_processes = config['num_processes']

@@ -61,16 +61,9 @@ class LearnerReplayMemory:
 
         # 各エピソードの中からサンプルするシーケンスのインデックスを取得
         # batch * sequence * elements(obs, action, reward, done)
-
-
         sample_sequence_index = []
         trajectory_sequence_batch = []
         rnn_state_batch = []
-        traj_s=[]
-        traj_a=[]
-        traj_r = []
-        traj_gam = []
-
         for episode_index in sample_episode_index:
             episode_trajectory = self.memory[episode_index]
             priority = torch.tensor(self.priority[episode_index])
@@ -78,49 +71,26 @@ class LearnerReplayMemory:
             sequence_index = [index for index in sequence_index]
             sequence_index = sequence_index[0]
             sample_sequence_index.append(sequence_index)
-            
-            ss,aa,rr,gg = zip(*(episode_trajectory[sequence_index: sequence_index + self.sequence_length+self.n_step]))
+            trajectory_sequence_batch.append(episode_trajectory[sequence_index: sequence_index + self.sequence_length+self.n_step])
 
-            traj_s.append(torch.cat(ss))
-            traj_a.append(torch.cat(aa))
-            traj_r.append(torch.cat(rr))
-            traj_gam.append(torch.cat(gg))
-
-
-            #trajectory_sequence_batch.append(episode_trajectory[sequence_index: sequence_index + self.sequence_length+self.n_step])
-        
             episode_rnn_state = self.recurrent_state[episode_index]
-            act,tact,cri,tcri = episode_rnn_state[sequence_index]
-            rnn_state_batch.append([act,tact,cri,tcri])
-            #rnn_state_batch.append(episode_rnn_state[sequence_index])
+            rnn_state_batch.append(episode_rnn_state[sequence_index])
 
         # elements(obs, action, reward, terminal) * sequence * batch
         
-        #trajectory_batch_sequence = [[[trajectory_sequence_batch[b][s][e] for b in range(self.batch_size)] for s in range(self.sequence_length+self.n_step)] for e in range(4)]
-# 4,18,6,1,3,,  [obs_act_rew_gam, seq, batch, ]
+        trajectory_batch_sequence = [[[trajectory_sequence_batch[b][s][e] for b in range(self.batch_size)] for s in range(self.sequence_length+self.n_step)] for e in range(4)]
+#        4,18,6,1,3,,  [obs_act_rew_gam, seq, batch, ]
+        obs_batch_sequence = torch.Tensor(trajectory_batch_sequence[0]).to(self.dev)
+        action_batch_sequence = torch.Tensor(trajectory_batch_sequence[1]).to(self.dev)
+        reward_batch_sequence = torch.Tensor(trajectory_batch_sequence[2]).to(self.dev)
+        gamma_batch_sequence = torch.Tensor(trajectory_batch_sequence[3]).to(self.dev)
 
-        shape = (self.sequence_length+self.n_step,self.batch_size,-1)
-        obs_batch_sequence = torch.stack(traj_s).reshape( shape ).to(self.dev)
-        action_batch_sequence = torch.stack(traj_a).reshape( shape ).to(self.dev)
-        reward_batch_sequence = torch.stack(traj_r).reshape( shape ).to(self.dev)
-        gamma_batch_sequence = torch.stack(traj_gam).reshape( shape ).to(self.dev)
-
-#        obs_batch_sequence = torch.Tensor(trajectory_batch_sequence[0]).to(self.dev)
-#        action_batch_sequence = torch.Tensor(trajectory_batch_sequence[1]).to(self.dev)
-#        reward_batch_sequence = torch.Tensor(trajectory_batch_sequence[2]).to(self.dev)
-#        gamma_batch_sequence = torch.Tensor(trajectory_batch_sequence[3]).to(self.dev)
-
-        act,tact,cri,tcri = zip(*rnn_state_batch)
-        shape2 = (2,self.batch_size,-1)
-        actor_state_batch = torch.stack(act).reshape( shape2).to(self.dev)
-        target_actor_state_batch= torch.stack(tact).reshape( shape2).to(self.dev)
-        critic_state_batch = torch.stack(cri).reshape( shape2).to(self.dev)
-        target_critic_state_batch = torch.stack(tcri).reshape( shape2).to(self.dev)
-
-
-
-
-
+        # batch * state -> state * batch  ,4,2,6,128
+        rnn_state_batch = torch.stack([torch.stack([ torch.stack([rnn_state_batch[b][e][i] for b in range(self.batch_size)]) for i in range(2)]) for e in range(4)])
+        actor_state_batch = torch.Tensor(rnn_state_batch[0]).to(self.dev)
+        target_actor_state_batch = torch.Tensor(rnn_state_batch[1]).to(self.dev)
+        critic_state_batch = torch.Tensor(rnn_state_batch[2]).to(self.dev)
+        target_critic_state_batch = torch.Tensor(rnn_state_batch[3]).to(self.dev)
 
         return sample_episode_index, sample_sequence_index, obs_batch_sequence, action_batch_sequence, reward_batch_sequence, gamma_batch_sequence, \
                 actor_state_batch, target_actor_state_batch, critic_state_batch, target_critic_state_batch
@@ -194,9 +164,7 @@ class Learner:
 #        self.critic.load_state_dict(self.shared_state["critic"])
 #        self.target_critic.load_state_dict(self.shared_state["target_critic"])
         
-        self.learner_actor_rate = config['learner_actor_rate']
-
-
+        
         
         self.n_actions = 1
         self.max_frame = config['learner_max_frame']
@@ -209,7 +177,7 @@ class Learner:
 #        self.memory_path = './memory_data/'
 #        self.model_save_interval = 10 # 50
         self.learner_parameter_update_interval = config['learner_parameter_update_interval'] # 50
-        self.target_update_inverval = config['target_update_interval'] # 100
+        self.target_update_inverval = 500 # 100
 
         self.gamma = config['gamma']
         self.actor_lr = config['actor_lr']
@@ -248,7 +216,7 @@ class Learner:
         while  self.memory.size() < self.batch_size :
 #            self.memory.append(self.shared_queue.get(block=True))
             self.memory.append(self.shared_queue.get())
-            print('\rmem size: ',self.memory.size(),end='\r')
+            
             
 #            print('waiting  shared q {}/{}'.format(self.memory.size(),self.batch_size))
 #            for i in range(self.shared_queue.qsize()):
@@ -286,7 +254,7 @@ class Learner:
             for i in range(self.shared_queue.qsize()):
 ##                global_buf.append(self.shared_queue.get())
                 self.memory.append(self.shared_queue.get())
-                count_mem += self.learner_actor_rate
+                count_mem += 5
             frame+=1
             
             count_mem -= 1
@@ -314,9 +282,9 @@ class Learner:
                 q_value[i*self.batch_size: (i+1)*self.batch_size] = self.critic(obs_seq[obs_i], action_seq[obs_i])
                 with torch.no_grad():
                     next_q_value = self.target_critic(obs_seq[next_obs_i], self.target_actor(obs_seq[next_obs_i]))
-                    target_q_val = reward_seq[obs_i] +  (gamma_seq[next_obs_i-1]** self.n_step) * next_q_value
+                    target_q_val = reward_seq[obs_i] +  (gamma_seq[next_obs_i-1]** self.n_step) * next_q_value.view(-1)
     #                target_q_val = invertical_vf(target_q_val)
-                    target_q_value[i*self.batch_size: (i+1)*self.batch_size] = target_q_val
+                    target_q_value[i*self.batch_size: (i+1)*self.batch_size] = target_q_val.view(-1,1)
             
             critic_loss = self.actor_criterion(q_value, target_q_value.detach())
             self.critic_optimizer.zero_grad()
@@ -344,7 +312,7 @@ class Learner:
                 self.update_target_model()
                 
                 
-            print('#',frame,'critic_loss:',critic_loss.item(),'  actor_loss:',actor_loss.item() ,'  count:',count_mem)
+            print('#',frame,'critic_loss:',critic_loss.item(),'  actor_loss:',actor_loss.item())
             
             
             # calc priority
@@ -405,80 +373,72 @@ def learner_process(lid,config,dev_cpu,shared_state,shared_queue):
     learner.run()
     
 from actor import Actor, actor_process
-import queue
+
     
+
 if __name__ == '__main__':
     config = {
             'game_name':'Pendulum-v0',
             'action_space':1,
             'obs_space':(3),
-            'burn_in_length':10,
-            'learning_length':20,
+            'burn_in_length':20,
+            'learning_length':40,
             'n_step':5,
-            'memory_sequence_size':100,
+            'memory_sequence_size':1000000,
             'actor_parameter_update_interval':600,
-            'learner_parameter_update_interval':10,
-            'actor_lr':1e-3,
-            'critic_lr':1e-2,
             'gamma':0.997,
-            'actor_max_frame':600,
+            'actor_max_frame':1000,
             'learner_max_frame':10,
-            'batch_size':5,
-            'num_processes':8,
-            'num_envs':1,
-            'learner_actor_rate':20,
-            'target_update_interval':100,
+            'batch_size':10,
             }
 
-    num_processes = config['num_processes']
+
     use_cuda = torch.cuda.is_available()
     dev_cpu = torch.device('cpu')
     dev_gpu = torch.device('cuda' if use_cuda else 'cpu')
     
-    
 #    manager = mp.Manager()
 #    shared_state = manager.dict()
-#    shared_queue = manager.Queue()
-    shared_queue = queue.Queue()
     shared_state = dict()
+#    shared_queue = manager.Queue()
+    shared_queue = mp.Queue()
+    num_processes = 2
+    #shared_state["Q_state"]
+    shared_state["actor"] = ActorNet(config['obs_space'], config['action_space'],dev_cpu).share_memory()
+    shared_state["critic"] = CriticNet(config['obs_space'], config['action_space'],dev_cpu).share_memory()
+    shared_state["target_actor"] = ActorNet(config['obs_space'], config['action_space'],dev_cpu).share_memory()
+    shared_state["target_critic"] = CriticNet(config['obs_space'], config['action_space'],dev_cpu).share_memory()
     
-
-    shared_state["actor"] = ActorNet(config['obs_space'], config['action_space'],dev_cpu)
-    shared_state["critic"] = CriticNet(config['obs_space'], config['action_space'],dev_cpu)
-    shared_state["target_actor"] = ActorNet(config['obs_space'], config['action_space'],dev_cpu)
-    shared_state["target_critic"] = CriticNet(config['obs_space'], config['action_space'],dev_cpu)
+#    
+#    shared_state["actor"] = ActorNet(config['obs_space'], config['action_space'],dev_cpu).state_dict()
+#    shared_state["critic"] = CriticNet(config['obs_space'], config['action_space'],dev_cpu).state_dict()
+#    shared_state["target_actor"] = ActorNet(config['obs_space'], config['action_space'],dev_cpu).state_dict()
+#    shared_state["target_critic"] = CriticNet(config['obs_space'], config['action_space'],dev_cpu).state_dict()
     
     
-#    shared_state["frame"] = mp.Array('i', [0 for i in range(num_processes)])
-#    shared_state["sleep"] = mp.Array('i', [0 for i in range(num_processes)])
-    shared_state["frame"] = [0 for i in range(num_processes)]
-    shared_state["sleep"] = [0 for i in range(num_processes)]
+    shared_state["frame"] = mp.Array('i', [0 for i in range(num_processes)])
+    shared_state["sleep"] = mp.Array('i', [0 for i in range(num_processes)])
+#    shared_state["frame"] = [0 for i in range(num_processes)]
+#    shared_state["sleep"] = [0 for i in range(num_processes)]
+    
+    learner = Learner(9,config,dev_cpu,shared_state,shared_queue)
     
     
     for i in range(10):
-        actor_process(0,config,dev_cpu,shared_state,shared_queue,0.3)
-        actor_process(1,config,dev_cpu,shared_state,shared_queue,0.3)
-        actor_process(2,config,dev_cpu,shared_state,shared_queue,0.3)
-        learner_process(1,config,dev_cpu,shared_state,shared_queue)
+        actor_process(0,config,dev_cpu,shared_state,shared_queue)
+        actor_process(1,config,dev_cpu,shared_state,shared_queue)
+        actor_process(2,config,dev_cpu,shared_state,shared_queue)
+        learner.run()
 
 
-#
 #    learner_procs = mp.Process(target=learner_process, args=(0, config,dev_gpu,shared_state,shared_queue))
 #    learner_procs.start()
-    
-#    eps = [0.05,0.6,0.4,0.3,0.2,0.6,0.4,0.6,0.2,0.4]
+#    
 #    actor_procs = []
-#    for i in range(num_processes):
-#        actor_proc = mp.Process(target=actor_process, args=(i,config,dev_cpu,shared_state,shared_queue,eps[i]))
+#    for i in range(1, num_processes):
+#        actor_proc = mp.Process(target=actor_process, args=(i,config,dev_cpu,shared_state,shared_queue))
 #        actor_proc.start()
 #        actor_procs.append(actor_proc)
-
-
-#    learner_process(0, config,dev_gpu,shared_state,shared_queue)
-    
-    
-#    
-#    learner_procs.join()
-#    for act in actor_procs:
-#        act.join()
-    
+#
+##    learner_procs.join()
+#    actor_procs[0].join()
