@@ -18,22 +18,27 @@ import pickle
 import queue
 from multiprocessing_env import SubprocVecEnv
 
+ttime = time()
+def time_check(num=0):
+    global ttime
+    print(f'{num}  time:{time()-ttime}')
+    ttime = time()
 
 
 class env_cover():
-    def __init__(self,name,dev,num):
+    def __init__(self,config,dev):
 
         
         self.dev = dev
-        self.num_env =num
+        self.num_env =config['num_envs']
         self.obs_shape = (self.num_env,3)
         
-        if num == 1:
-            self.env = gym.make(name)
+        if self.num_env == 1:
+            self.env = gym.make(config['game_name'])
         else:
             def make_env():
                 def _thunk():
-                    env = gym.make(name)
+                    env = gym.make(config['game_name'])
                     return env
                 return _thunk
             envs = [make_env() for i in range(self.num_env)]
@@ -44,14 +49,14 @@ class env_cover():
         st = self.env.reset()
 
         return torch.FloatTensor(st).reshape(self.obs_shape).to(self.dev), torch.zeros([self.num_env,1]).to(self.dev),torch.zeros([self.num_env,1]).to(self.dev)
-        #return st, 0,False
+#        return st, 0,False
     
     def get_obs(self,obs):
         return torch.from_numpy(obs).detach().float().view(1,config['obs_space'])
 
     def step(self,action):
         st,rt,dt,_ = self.env.step(action.cpu().numpy())
-
+        
         st = torch.FloatTensor(st).reshape(self.obs_shape).to(self.dev)
         rt = torch.FloatTensor(rt).reshape((self.num_env,1)).to(self.dev)
         if self.num_env ==1:
@@ -69,7 +74,6 @@ class env_cover():
         
 
 def calc_priority(td_loss, eta=0.9):
-
     stack = torch.stack(td_loss)
     return eta* stack.max(dim=0)[0] + (1.-eta )*stack.mean(dim=0)
 
@@ -96,7 +100,7 @@ class Actor:
 #        self.obs_size = get_obs(self.env.reset().observation).shape[1]
 
         self.num_env = config['num_envs']
-        self.env = env_cover(config['game_name'],dev,self.num_env)
+        self.env = env_cover(config,dev)
         self.action_size = config['action_space']
         self.obs_size = config['obs_space']
 
@@ -121,6 +125,8 @@ class Actor:
         self.actor_parameter_update_interval = config['actor_parameter_update_interval']
         self.model_path = './'
         self.memory_path = './'
+        self.max_shared_q_size=config['max_shared_q_size']
+        self.epsilon = eps 
         
         self.actor = ActorNet(config['obs_space'], config['action_space'],dev).to(self.dev)
         self.target_actor = ActorNet(config['obs_space'], config['action_space'],dev).to(self.dev)
@@ -132,14 +138,11 @@ class Actor:
         self.critic.load_state_dict(self.shared_state["critic"].state_dict())
         self.target_critic.load_state_dict(self.shared_state["target_critic"].state_dict())
 
-#        self.actor.load_state_dict(self.shared_state["actor"])
-#        self.target_actor.load_state_dict(self.shared_state["target_actor"])
-#        self.critic.load_state_dict(self.shared_state["critic"])
-#        self.target_critic.load_state_dict(self.shared_state["target_critic"])
-        
+    def __del__(self):
+        self.env.close()
         
 #        self.load_model()
-        self.epsilon = eps 
+        
         
     def PrePro(self,obs):
         return obs
@@ -166,12 +169,6 @@ class Actor:
         if os.path.isfile(self.model_path + 'model.pt'):
             while True:
                 try:
-                    # TODO: Delete
-#                    self.actor = ActorNet(self.obs_size, self.action_size, self.actor_id%2+1).cuda().eval()
-#                    self.target_actor = deepcopy(self.actor)
-#                    self.critic = CriticNet(self.obs_size, self.action_size, self.actor_id%2+1).cuda().eval()
-#                    self.target_critic = deepcopy(self.critic)
-                    #model_dict = torch.load(self.model_path + 'model.pt', map_location={'cuda:0':'cuda:{}'.format(self.actor_id%2+1)})
                     print('waiting  model.pt')
                     model_dict = torch.load(self.model_path + 'model.pt')
                     self.actor.load_state_dict(model_dict['actor'])
@@ -211,14 +208,9 @@ class Actor:
     
     #       n 스텝 진행 하면서 Q 벨류 예측.   seq[시퀀스][0:staet ,1:action ,2:reward,3:term->gamma]
             for i in range(len(self.sequence) - self.n_step):
-    #            obs = torch.from_numpy(self.sequence[i][0]).unsqueeze(0)
                 obs = self.sequence[i][0]
-    #            action = self.sequence[i][1].unsqueeze(0)
                 next_obs = self.sequence[i + self.n_step][0]
-
                 action = self.sequence[i][1]
-#                action = torch.Tensor(self.sequence[i][1]).view(1,-1).to(self.dev)
-    #            next_obs = torch.from_numpy(self.sequence[i + self.n_step][0]).unsqueeze(0)
                 next_action = self.target_actor(self.PrePro(next_obs)).to(self.dev)
     
                 q_value = self.critic(self.PrePro(obs), action)
@@ -238,8 +230,7 @@ class Actor:
             
             
             
-    def __del__(self):
-        self.env.close()
+    
     
     def run(self):
         frame = 0
@@ -266,6 +257,7 @@ class Actor:
             count_step = 0     
             
             while sum(dt)!=self.num_env:
+#            while not dt:
                 
                 frame+=1
                 # get recurrent state
@@ -279,9 +271,9 @@ class Actor:
                 _ = self.critic(self.PrePro(st), action)
                 _ = self.target_critic(self.PrePro(st), target_action)
 
-                noise = torch.normal(mean=torch.zeros([self.num_env,1]),std=torch.ones([self.num_env,1])).to(self.dev)
-#                action = action.detach().item() +  np.random.normal(0, self.epsilon, (self.action_size))
-#                action = np.clip(action, -1, 1)
+                noise = torch.normal(mean=torch.zeros([self.num_env,1]),\
+                                     std=torch.ones([self.num_env,1])).to(self.dev)
+                
                 action = (action+noise).clamp(min=-1,max=1)
 
                 st_1, rt, dt = self.env.step(action)
@@ -289,20 +281,13 @@ class Actor:
                 reward_sum += rt
                 count_step += 1
                 gamma = torch.ones([self.num_env,1]).to(self.dev)*self.gamma*(1-dt)
-#                gamma = self.gamma if not dt else 0.
                 self.sequence.append([st, action, rt, gamma])
                 st = st_1
 
-                self.recurrent_state.append([torch.cat([actor_hx, actor_cx]), torch.cat([target_actor_hx, target_actor_cx]), 
-                                                torch.cat([critic_hx, critic_cx]), torch.cat([target_critic_hx, target_critic_cx])])
+                self.recurrent_state.append([torch.cat([actor_hx, actor_cx]), torch.cat([target_actor_hx, target_actor_cx]), torch.cat([critic_hx, critic_cx]), torch.cat([target_critic_hx, target_critic_cx])])
 
                 if frame % self.actor_parameter_update_interval == 0:
-                    print('actor_update',self.actor.l1.weight.data[0])
-#                    self.actor.load_state_dict(self.shared_state["actor"])
-#                    self.target_actor.load_state_dict(self.shared_state["target_actor"])
-#                    self.critic.load_state_dict(self.shared_state["critic"])
-#                    self.target_critic.load_state_dict(self.shared_state["target_critic"])
-        
+#                    print('actor_update',self.actor.l1.weight.data[0])
                     self.actor.load_state_dict(self.shared_state["actor"].state_dict())
                     self.target_actor.load_state_dict(self.shared_state["target_actor"].state_dict())
                     self.critic.load_state_dict(self.shared_state["critic"].state_dict())
@@ -312,29 +297,25 @@ class Actor:
 
             if len(self.sequence) >= self.sequence_length:
                 #self.sequence.extend([(st, action, 0., 0.) for i in range(self.n_step)])
-                self.sequence.extend([(st, action, torch.zeros([self.num_env,1]).to(self.dev),torch.zeros([self.num_env,1]).to(self.dev)) for i in range(self.n_step)])
+                self.sequence.extend([[st, action, torch.zeros([self.num_env,1]).to(self.dev),torch.zeros([self.num_env,1]).to(self.dev)] for i in range(self.n_step)])
 
                 self.calc_nstep_reward()
                 self.calc_priorities()
                 
-#                while self.shared_state['data'][self.actor_id]:
-#                    sleep(0.1)
+                blocking = True if self.shared_queue.qsize()>self.max_shared_q_size else False
+#                print('#{}  blocking:{}'.format(self.actor_id,blocking))
+#                for i in range(len(self.sequence)):
+##                    print(self.sequence[i])
+#                    for j in range(4):
+#                        self.sequence[i][j] = self.sequence[i][j].cuda()
+#                for i in range(len(self.recurrent_state)):
+#                    for j in range(2):
+#                        self.recurrent_state[i][j] = self.recurrent_state[i][j].cuda()
+#                for i in range(len(self.priority)):
+#                    self.priority[i] = self.priority[i].cuda()
                 
-#                self.shared_state['data'][self.actor_id]=True
-#                with open('actor{}.mt'.format(self.actor_id), 'wb') as f:
-#                    pickle.dump([self.sequence, self.recurrent_state, self.priority], f)
-                
-                
-                
-#                while self.shared_queue.qsize() > 100:
-#                    print('shared Queue  sleep')
-#                    time.sleep(1)
-                blocking = True if self.shared_queue.qsize()>5 else False
                 self.shared_queue.put([self.sequence, self.recurrent_state, self.priority],block=blocking)
-#                print(len(self.sequence),len(self.recurrent_state),len(self.priority))
-#                self.memory.add(self.sequence, self.recurrent_state, self.priority)
-                
-#            if self.actor_id == 0:
+
             print('#',self.actor_id,'frame:', frame,'step:', count_step, 'reward:', reward_sum)
                       
             
@@ -361,13 +342,14 @@ if __name__ == '__main__':
             'actor_lr':1e-3,
             'critic_lr':1e-2,
             'gamma':0.997,
-            'actor_max_frame':1000,
+            'actor_max_frame':5000,
             'learner_max_frame':200000,
             'batch_size':16,
             'num_processes':8,
             'num_envs':1,
             'learner_actor_rate':20,
             'target_update_interval':100,
+            'max_shared_q_size':5,
             }
 
     num_processes = config['num_processes']
@@ -406,12 +388,13 @@ if __name__ == '__main__':
 #    learner_procs = mp.Process(target=learner_process, args=(0, config,dev_gpu,shared_state,shared_queue))
 #    learner_procs.start()
     
-#    eps = [0.05,0.6,0.4,0.3,0.2,0.6,0.4,0.6,0.2,0.4]
-#    actor_procs = []
-#    for i in range(num_processes):
-#        actor_proc = mp.Process(target=actor_process, args=(i,config,dev_cpu,shared_state,shared_queue,eps[i]))
-#        actor_proc.start()
-#        actor_procs.append(actor_proc)
+    eps = [0.05,0.6,0.4,0.3,0.2,0.6,0.4,0.6,0.2,0.4]
+    actor_procs = []
+#    time_check(0)
+    for i in range(num_processes):
+        actor_proc = mp.Process(target=actor_process, args=(i,config,dev_cpu,shared_state,shared_queue,eps[i]))
+        actor_proc.start()
+        actor_procs.append(actor_proc)
 
 
 #    learner_process(0, config,dev_gpu,shared_state,shared_queue)
@@ -419,6 +402,6 @@ if __name__ == '__main__':
     
 #    
 #    learner_procs.join()
-#    for act in actor_procs:
-#        act.join()
-    
+    for act in actor_procs:
+        act.join()
+#    time_check(1)

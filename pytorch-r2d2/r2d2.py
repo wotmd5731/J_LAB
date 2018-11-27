@@ -18,6 +18,11 @@ from actor import Actor, actor_process
 from learner import Learner, learner_process
 from models import ActorNet, CriticNet
 
+use_cuda = torch.cuda.is_available()
+dev_cpu = torch.device('cpu')
+dev_gpu = torch.device('cuda' if use_cuda else 'cpu')
+
+    
 if __name__ == '__main__':
     config = {
             'game_name':'Pendulum-v0',
@@ -28,7 +33,7 @@ if __name__ == '__main__':
             'n_step':5,
             'memory_sequence_size':100,
             'actor_parameter_update_interval':2000,
-            'learner_parameter_update_interval':30,
+            'learner_parameter_update_interval':50,
             'actor_lr':1e-3,
             'critic_lr':1e-2,
             'gamma':0.997,
@@ -38,12 +43,12 @@ if __name__ == '__main__':
             'num_processes':8,
             'num_envs':1,
             'learner_actor_rate':20,
+            'target_update_interval':100,
+            'max_shared_q_size':10,
             }
 
     num_processes = config['num_processes']
-    use_cuda = torch.cuda.is_available()
-    dev_cpu = torch.device('cpu')
-    dev_gpu = torch.device('cuda' if use_cuda else 'cpu')
+    
     
     
     manager = mp.Manager()
@@ -52,25 +57,18 @@ if __name__ == '__main__':
 #    shared_queue = queue.Queue()
 #    shared_state = dict()
     
-    #shared_state["Q_state"]
+    
 #    shared_state["actor"] = ActorNet(config['obs_space'], config['action_space'],dev_cpu).share_memory()
 #    shared_state["critic"] = CriticNet(config['obs_space'], config['action_space'],dev_cpu).share_memory()
 #    shared_state["target_actor"] = ActorNet(config['obs_space'], config['action_space'],dev_cpu).share_memory()
 #    shared_state["target_critic"] = CriticNet(config['obs_space'], config['action_space'],dev_cpu).share_memory()
-
+#    shared_state["frame"] = mp.Array('i', [0 for i in range(num_processes)])
+#    shared_state["sleep"] = mp.Array('i', [0 for i in range(num_processes)])
+    
     shared_state["actor"] = ActorNet(config['obs_space'], config['action_space'],dev_cpu)
     shared_state["critic"] = CriticNet(config['obs_space'], config['action_space'],dev_cpu)
     shared_state["target_actor"] = ActorNet(config['obs_space'], config['action_space'],dev_cpu)
     shared_state["target_critic"] = CriticNet(config['obs_space'], config['action_space'],dev_cpu)
-    
-#    shared_state["actor"] = ActorNet(config['obs_space'], config['action_space'],dev_cpu).state_dict()
-#    shared_state["critic"] = CriticNet(config['obs_space'], config['action_space'],dev_cpu).state_dict()
-#    shared_state["target_actor"] = ActorNet(config['obs_space'], config['action_space'],dev_cpu).state_dict()
-#    shared_state["target_critic"] = CriticNet(config['obs_space'], config['action_space'],dev_cpu).state_dict()
-    
-    
-#    shared_state["frame"] = mp.Array('i', [0 for i in range(num_processes)])
-#    shared_state["sleep"] = mp.Array('i', [0 for i in range(num_processes)])
     shared_state["frame"] = [0 for i in range(num_processes)]
     shared_state["sleep"] = [0 for i in range(num_processes)]
     
@@ -102,19 +100,3 @@ if __name__ == '__main__':
     for act in actor_procs:
         act.join()
     
-#    frame = [0 for i in range(num_processes)]
-#    while True:
-#        sleep(0.5)
-#        for i in range(num_processes):
-#            print('#',i,'frame:',shared_state["frame"][i],':',shared_state["sleep"][i])
-#            
-#        for i in range(num_processes):
-#            frame[i] = shared_state['frame'][i]
-#        if max(frame) - min(frame) > 100:
-#            idx = torch.LongTensor(frame).topk(num_processes-1)[1]
-#            for i in range(num_processes):
-#                if i in idx:
-#                    shared_state['sleep'][i]=True
-#                else:
-#                    shared_state['sleep'][i]=False
-                    
