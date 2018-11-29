@@ -14,9 +14,9 @@ def fanin_init(size, fanin=None):
 class ActorNet(nn.Module):
     def __init__(self, obs_size, n_actions, dev):
         super(ActorNet, self).__init__()
-        self.l1 = nn.Linear(in_features=obs_size, out_features=32)
-        self.l2 = nn.LSTMCell(32, 32)
-        self.l3 = nn.Linear(in_features=32, out_features=n_actions)
+        self.l1 = nn.Linear(in_features=obs_size, out_features=128)
+        self.l2 = nn.LSTMCell(128, 128)
+        self.l3 = nn.Linear(in_features=128, out_features=n_actions)
 
         self.l1.weight.data = fanin_init(self.l1.weight.data.size())
         self.l2.weight_ih.data = fanin_init(self.l2.weight_ih.data.size())
@@ -33,8 +33,8 @@ class ActorNet(nn.Module):
     def __call__(self, x):
         x = torch.tanh(self.l1(x))
         if self.hx is None: # 200
-            self.hx = torch.zeros((x.size()[0] ,32)).to(self.dev)
-            self.cx = torch.zeros((x.size()[0] ,32)).to(self.dev)
+            self.hx = torch.zeros((x.size()[0] ,128)).to(self.dev)
+            self.cx = torch.zeros((x.size()[0] ,128)).to(self.dev)
         self.hx, self.cx = self.l2(x, (self.hx, self.cx))
         x = torch.tanh(self.hx)
         x = torch.tanh(self.l3(x))
@@ -50,16 +50,16 @@ class ActorNet(nn.Module):
 
     def get_state(self):
         if self.hx is None:
-            return torch.zeros((1 ,32)), torch.zeros((1 ,32))
+            return torch.zeros((1 ,128)), torch.zeros((1 ,128))
         else:
-            return self.hx.clone().detach(), self.cx.clone().detach()
+            return self.hx.clone().detach().cpu(), self.cx.clone().detach().cpu()
 
 class CriticNet(nn.Module): # 400-300
     def __init__(self, obs_size, n_actions, dev):
         super(CriticNet, self).__init__()
-        self.l1 = nn.Linear(in_features=obs_size + n_actions, out_features=32)
-        self.l2 = nn.LSTMCell(32, 32)
-        self.l3 = nn.Linear(in_features=32, out_features=n_actions)
+        self.l1 = nn.Linear(in_features=obs_size + n_actions, out_features=128)
+        self.l2 = nn.LSTMCell(128, 128)
+        self.l3 = nn.Linear(in_features=128, out_features=n_actions)
 
         self.l1.weight.data = fanin_init(self.l1.weight.data.size())
         self.l2.weight_ih.data = fanin_init(self.l2.weight_ih.data.size())
@@ -76,8 +76,8 @@ class CriticNet(nn.Module): # 400-300
         x = torch.cat((x,a), 1)
         x = torch.tanh(self.l1(x))
         if self.hx is None: # 300
-            self.hx = torch.zeros((x.size()[0] ,32)).to(self.dev)
-            self.cx = torch.zeros((x.size()[0] ,32)).to(self.dev)
+            self.hx = torch.zeros((x.size()[0] ,128)).to(self.dev)
+            self.cx = torch.zeros((x.size()[0] ,128)).to(self.dev)
         self.hx, self.cx = self.l2(x, (self.hx, self.cx))
         x = torch.tanh(self.hx)
         x = self.l3(self.hx)
@@ -93,6 +93,6 @@ class CriticNet(nn.Module): # 400-300
 
     def get_state(self):
         if self.hx is None:
-            return torch.zeros((1 ,32)), torch.zeros((1 ,32))
+            return torch.zeros((1 ,128)), torch.zeros((1 ,128))
         else:
-            return self.hx.clone().detach(), self.cx.clone().detach()
+            return self.hx.clone().detach().cpu(), self.cx.clone().detach().cpu()
