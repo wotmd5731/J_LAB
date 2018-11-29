@@ -235,7 +235,10 @@ class Learner:
         self.critic_criterion = nn.MSELoss()
         
         
-                    
+    def __del__(self):
+        self.shared_queue.close()
+        self.shared_state.close()
+
                     
 #        self.save_model()
     
