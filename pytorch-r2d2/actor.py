@@ -122,6 +122,8 @@ class Actor:
         self.max_frame = config['actor_max_frame']
         self.gamma = config['gamma']
 #        self.actor_parameter_update_interval = config['actor_parameter_update_interval']
+        self.max_shared_q_size=config['max_shared_q_size']
+        
         self.model_path = './'
         self.memory_path = './'
         
@@ -143,6 +145,8 @@ class Actor:
         
 #        self.load_model()
         self.epsilon = eps 
+    def __del__(self):
+        self.env.close()
         
     def PrePro(self,obs):
         return obs
@@ -241,8 +245,6 @@ class Actor:
             
             
             
-    def __del__(self):
-        self.env.close()
     
     def run(self):
 #        sleep(random.random()*1)
@@ -306,20 +308,10 @@ class Actor:
                 self.recurrent_state.append([torch.cat([actor_hx, actor_cx]), torch.cat([target_actor_hx, target_actor_cx]), 
                                                 torch.cat([critic_hx, critic_cx]), torch.cat([target_critic_hx, target_critic_cx])])
 
-<<<<<<< HEAD
 #                if True:
                 if self.shared_state["update"][self.actor_id]:
                     
                     
-=======
-                if frame % self.actor_parameter_update_interval == 0:
-                    print('actor_update',self.actor.l1.weight.data[0])
-#                    self.actor.load_state_dict(self.shared_state["actor"])
-#                    self.target_actor.load_state_dict(self.shared_state["target_actor"])
-#                    self.critic.load_state_dict(self.shared_state["critic"])
-#                    self.target_critic.load_state_dict(self.shared_state["target_critic"])
-        
->>>>>>> parent of 51ba949... aaa
                     self.actor.load_state_dict(self.shared_state["actor"].state_dict())
                     self.target_actor.load_state_dict(self.shared_state["target_actor"].state_dict())
                     self.critic.load_state_dict(self.shared_state["critic"].state_dict())
@@ -331,42 +323,22 @@ class Actor:
 
             if len(self.sequence) >= self.sequence_length:
                 #self.sequence.extend([(st, action, 0., 0.) for i in range(self.n_step)])
-                self.sequence.extend([(st, action, torch.zeros([self.num_env,1]).to(self.dev),torch.zeros([self.num_env,1]).to(self.dev)) for i in range(self.n_step)])
+                self.sequence.extend([[st, action, torch.zeros([self.num_env,1]).to(self.dev),torch.zeros([self.num_env,1]).to(self.dev)] for i in range(self.n_step)])
 
                 self.calc_nstep_reward()
                 self.calc_priorities()
                 
-<<<<<<< HEAD
                 
-#                print('#{}  blocking:{}'.format(self.actor_id,blocking))
-                for i in range(len(self.sequence)):
-#                    print(self.sequence[i])
-                    for j in range(4):
-                        self.sequence[i][j] = self.sequence[i][j].cpu()
-                for i in range(len(self.recurrent_state)):
-                    for j in range(4):
-                        self.recurrent_state[i][j] = self.recurrent_state[i][j].cpu()
-                for i in range(len(self.priority)):
-                    self.priority[i] = self.priority[i].cpu()
+#                for i in range(len(self.sequence)):
+#                    for j in range(4):
+#                        self.sequence[i][j] = self.sequence[i][j].cpu()
+#                for i in range(len(self.recurrent_state)):
+#                    for j in range(4):
+#                        self.recurrent_state[i][j] = self.recurrent_state[i][j].cpu()
+#                for i in range(len(self.priority)):
+#                    self.priority[i] = self.priority[i].cpu()
                 blocking = True if self.shared_queue.qsize()>self.max_shared_q_size else False
-=======
-#                while self.shared_state['data'][self.actor_id]:
-#                    sleep(0.1)
-                
-#                self.shared_state['data'][self.actor_id]=True
-#                with open('actor{}.mt'.format(self.actor_id), 'wb') as f:
-#                    pickle.dump([self.sequence, self.recurrent_state, self.priority], f)
-                
-                
-                
-#                while self.shared_queue.qsize() > 100:
-#                    print('shared Queue  sleep')
-#                    time.sleep(1)
-                blocking = True if self.shared_queue.qsize()>5 else False
->>>>>>> parent of 51ba949... aaa
                 self.shared_queue.put([self.sequence, self.recurrent_state, self.priority],block=blocking)
-#                print(len(self.sequence),len(self.recurrent_state),len(self.priority))
-#                self.memory.add(self.sequence, self.recurrent_state, self.priority)
                 
 #            if self.actor_id == 0:
             print('#',self.actor_id,'frame:', frame,'step:', count_step, 'reward:', reward_sum)
@@ -380,6 +352,9 @@ def actor_process(actor_id,config,dev_cpu,shared_state,shared_queue,eps):
         actor = Actor(actor_id,config,dev_cpu,shared_state,shared_queue,eps)
         actor.run()
         
+ 
+    
+    
     
 if __name__ == '__main__':
     config = {
@@ -389,70 +364,94 @@ if __name__ == '__main__':
             'burn_in_length':10,
             'learning_length':20,
             'n_step':5,
-            'memory_sequence_size':100,
-#            'actor_parameter_update_interval':600,
-            'learner_parameter_update_interval':30,
-            'actor_lr':1e-3,
-            'critic_lr':1e-2,
+            'memory_sequence_size':500,
+#            'actor_parameter_update_interval':2000,
+            'learner_parameter_update_interval':100,
+            'actor_lr':1e-4,
+            'critic_lr':1e-3,
             'gamma':0.997,
-            'actor_max_frame':1000,
+            'actor_max_frame':400,
             'learner_max_frame':200000,
-            'batch_size':16,
-            'num_processes':8,
-            'num_envs':1,
+            'batch_size':64,
+            'num_processes':1,
+            'num_envs':3,
             'learner_actor_rate':20,
-            'target_update_interval':100,
+            'target_update_interval':30,
+            'max_shared_q_size':10,
             }
 
     num_processes = config['num_processes']
     use_cuda = torch.cuda.is_available()
     dev_cpu = torch.device('cpu')
     dev_gpu = torch.device('cuda' if use_cuda else 'cpu')
-    
+
     
 #    manager = mp.Manager()
 #    shared_state = manager.dict()
 #    shared_queue = manager.Queue()
-    shared_queue = queue.Queue()
+    
+    shared_queue = mp.Queue()
+    
+#    shared_queue = queue.Queue()
     shared_state = dict()
     
 
-    shared_state["actor"] = ActorNet(config['obs_space'], config['action_space'],dev_cpu)
-    shared_state["critic"] = CriticNet(config['obs_space'], config['action_space'],dev_cpu)
-    shared_state["target_actor"] = ActorNet(config['obs_space'], config['action_space'],dev_cpu)
-    shared_state["target_critic"] = CriticNet(config['obs_space'], config['action_space'],dev_cpu)
-    
-    
+    shared_state["actor"] = ActorNet(config['obs_space'], config['action_space'],dev_cpu).share_memory()
+    shared_state["critic"] = CriticNet(config['obs_space'], config['action_space'],dev_cpu).share_memory()
+    shared_state["target_actor"] = ActorNet(config['obs_space'], config['action_space'],dev_cpu).share_memory()
+    shared_state["target_critic"] = CriticNet(config['obs_space'], config['action_space'],dev_cpu).share_memory()
 #    shared_state["frame"] = mp.Array('i', [0 for i in range(num_processes)])
 #    shared_state["sleep"] = mp.Array('i', [0 for i in range(num_processes)])
-    shared_state["frame"] = [0 for i in range(num_processes)]
-    shared_state["sleep"] = [0 for i in range(num_processes)]
-    shared_state["update"]=False
+    shared_state["update"] = mp.Array('i', [0 for i in range(num_processes)])
     
-    for i in range(10):
-        actor_process(0,config,dev_gpu,shared_state,shared_queue,0.3)
-#        actor_process(1,config,dev_cpu,shared_state,shared_queue,0.3)
-#        actor_process(2,config,dev_cpu,shared_state,shared_queue,0.3)
-#        learner_process(1,config,dev_cpu,shared_state,shared_queue)
+
+    
+#    shared_state["actor"] = ActorNet(config['obs_space'], config['action_space'],dev_cpu)
+#    shared_state["critic"] = CriticNet(config['obs_space'], config['action_space'],dev_cpu)
+#    shared_state["target_actor"] = ActorNet(config['obs_space'], config['action_space'],dev_cpu)
+#    shared_state["target_critic"] = CriticNet(config['obs_space'], config['action_space'],dev_cpu)
+#    shared_state["frame"] = [0 for i in range(num_processes)]
+#    shared_state["sleep"] = [0 for i in range(num_processes)]
+#    shared_state["update"]=False
+    
+
 
 
 #
-#    learner_procs = mp.Process(target=learner_process, args=(0, config,dev_gpu,shared_state,shared_queue))
-#    learner_procs.start()
-    
+    proc_list = []
+#    proc_list.append(mp.Process(target=learner_process, args=(num_processes, config,dev_gpu,shared_state,shared_queue)))
 #    eps = [0.05,0.6,0.4,0.3,0.2,0.6,0.4,0.6,0.2,0.4]
-#    actor_procs = []
 #    for i in range(num_processes):
-#        actor_proc = mp.Process(target=actor_process, args=(i,config,dev_cpu,shared_state,shared_queue,eps[i]))
-#        actor_proc.start()
-#        actor_procs.append(actor_proc)
+#        proc_list.append( mp.Process(target=actor_process, args=(i,config,dev_gpu,shared_state,shared_queue,eps[i])) )
 
 
-#    learner_process(0, config,dev_gpu,shared_state,shared_queue)
-    
-    
-#    
-#    learner_procs.join()
-#    for act in actor_procs:
-#        act.join()
-    
+#    for proc in proc_list:
+#        proc.start()
+        
+    try:
+        for i in range(10):
+            actor_process(0,config,dev_cpu,shared_state,shared_queue,0.3)
+            actor_process(1,config,dev_cpu,shared_state,shared_queue,0.3)
+            actor_process(2,config,dev_cpu,shared_state,shared_queue,0.3)
+#        learner_process(1,config,dev_cpu,shared_state,shared_queue)
+#        for proc in proc_list:
+#            proc.join()
+    except:
+        print('qclose')
+        shared_queue.close()
+#        print('shared_state close')
+#        shared_state["update"].close()
+        
+#        for key in shared_state.keys():
+#            shared_state[key].close()
+        print('process close')
+        for proc in proc_list:
+            proc.terminate()
+            
+            
+        shared_queue.join_thread()
+#        shared_state["update"].join_thread()
+#        for key in shared_state.keys():
+#            shared_state[key].join_thread()
+#        shared_state.close()
+#        shared_queue.close()

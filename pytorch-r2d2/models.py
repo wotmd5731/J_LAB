@@ -10,7 +10,7 @@ def fanin_init(size, fanin=None):
     v = 1. / np.sqrt(fanin)
     return torch.Tensor(size).uniform_(-v, v)
 
-# 300-200
+
 class ActorNet(nn.Module):
     def __init__(self, obs_size, n_actions, dev):
         super(ActorNet, self).__init__()
