@@ -34,6 +34,7 @@ class env_cover():
         
         
         self.obs_shape = (self.num_env,)+config['obs_space'][1:]
+#        print(self.obs_shape)
         self.reward_shape = (self.num_env,)+config['reward_space'][1:]
         self.gamma_shape = (self.num_env,)+config['gamma_space'][1:]
         
@@ -81,7 +82,7 @@ class env_cover():
             st = self.env.render(mode='rgb_array')
             st = np.resize(st,self.obs_shape)/255.
             
-            
+#        print(st)
         st = torch.FloatTensor(st).reshape(self.obs_shape).to(self.dev)
         rt = torch.FloatTensor([rt]).reshape(self.reward_shape).to(self.dev)
         if self.num_env ==1:
@@ -101,9 +102,9 @@ class env_cover():
         
 
 def calc_priority(td_loss, eta=0.9):
-
-    stack = torch.stack(td_loss)
-    return eta* stack.max(dim=0)[0] + (1.-eta )*stack.mean(dim=0)
+    return td_loss[0]
+#    stack = torch.stack(td_loss)
+#    return eta* stack.max(dim=0)[0] + (1.-eta )*stack.mean(dim=0)
 
 #    return eta * max((td_loss)) + (1. - eta) * (sum((td_loss)) / len(td_loss))
 
@@ -237,37 +238,39 @@ class Actor:
             self.priority = []
     
     #       이부분은  target 넷을  nstep 만큼 진행 해놓는것.
-            for i in range(self.n_step):
-                next_obs = self.sequence[i][0]
-                next_action = self.target_actor(self.PrePro(next_obs)).to(self.dev)
-                next_q_value = self.target_critic(self.PrePro(next_obs), next_action)
+#            for i in range(self.n_step):
+#                next_obs = self.sequence[i][0]
+#                next_action = self.target_actor(self.PrePro(next_obs)).to(self.dev)
+#                next_q_value = self.target_critic(self.PrePro(next_obs), next_action)
     
     #       n 스텝 진행 하면서 Q 벨류 예측.   seq[시퀀스][0:staet ,1:action ,2:reward,3:term->gamma]
             for i in range(len(self.sequence) - self.n_step):
     #            obs = torch.from_numpy(self.sequence[i][0]).unsqueeze(0)
-                obs = self.sequence[i][0]
-    #            action = self.sequence[i][1].unsqueeze(0)
-                next_obs = self.sequence[i + self.n_step][0]
+#                obs = self.sequence[i][0]
+#    #            action = self.sequence[i][1].unsqueeze(0)
+#                next_obs = self.sequence[i + self.n_step][0]
+#
+#                action = self.sequence[i][1]
+##                action = torch.Tensor(self.sequence[i][1]).view(1,-1).to(self.dev)
+#    #            next_obs = torch.from_numpy(self.sequence[i + self.n_step][0]).unsqueeze(0)
+#                next_action = self.target_actor(self.PrePro(next_obs)).to(self.dev)
+#    
+#                q_value = self.critic(self.PrePro(obs), action)
+#                q_value = q_value.gather(1,action.view(1,-1))
+#                reward = self.sequence[i][2]
+#                gamma = self.sequence[i + self.n_step - 1][3]
+#                next_q_value = self.target_critic(self.PrePro(next_obs),next_action).max(1)[0]
+#                
+#                if i >= self.burn_in_length:
+#                    target_q_value = (reward + (gamma ** self.n_step)) * next_q_value
+##                    target_q_value = invertical_vf(target_q_value)
+#                    self.td_loss.append(((q_value - target_q_value)**2))
+#                    if len(self.td_loss) > self.learning_length:
+#                        self.td_loss.pop(0)
 
-                action = self.sequence[i][1]
-#                action = torch.Tensor(self.sequence[i][1]).view(1,-1).to(self.dev)
-    #            next_obs = torch.from_numpy(self.sequence[i + self.n_step][0]).unsqueeze(0)
-                next_action = self.target_actor(self.PrePro(next_obs)).to(self.dev)
-    
-                q_value = self.critic(self.PrePro(obs), action)
-                reward = self.sequence[i][2]
-                gamma = self.sequence[i + self.n_step - 1][3]
-                next_q_value = self.target_critic(self.PrePro(next_obs), next_action)
-                
-                if i >= self.burn_in_length:
-                    target_q_value = (reward + (gamma ** self.n_step)) * next_q_value
-#                    target_q_value = invertical_vf(target_q_value)
-                    self.td_loss.append(((q_value - target_q_value)**2))
-                    if len(self.td_loss) > self.learning_length:
-                        self.td_loss.pop(0)
-
-                if i >= self.sequence_length:
-                    self.priority.append(calc_priority(self.td_loss))
+#                if i >= self.sequence_length:
+#                    self.priority.append(calc_priority(self.td_loss))
+                self.priority.append(torch.Tensor([0]))
             
             
             
@@ -275,8 +278,8 @@ class Actor:
     def run(self):
 #        sleep(random.random()*1)
         frame = 0
-        if self.actor_id%3 == 0:
-            win_r = vis.line(Y=torch.Tensor([0]), opts=dict(title ='reward'+str(self.epsilon)))
+#        if self.actor_id%3 == 0:
+        win_r = vis.line(Y=torch.Tensor([0]), opts=dict(title ='reward'+str(self.epsilon)))
         reward_sum = 0
         
         
@@ -297,8 +300,12 @@ class Actor:
             self.priority = []
             
             self.td_loss.clear()
-            if self.actor_id%3 == 0:
-                win_r = vis.line(X=torch.Tensor([frame]), Y=torch.Tensor([reward_sum]), win= win_r , update ='append')
+#            if self.actor_id%3 == 0:
+            win_r = vis.line(X=torch.Tensor([frame]), Y=torch.Tensor([reward_sum]), win= win_r , update ='append')
+            qmin = 9999
+            qmax = -9999
+            pmin = 9999
+            pmax = -9999
             
             reward_sum = 0
             count_step = 0     
@@ -307,30 +314,36 @@ class Actor:
                 
                 frame+=1
                 # get recurrent state
-                actor_hx, actor_cx = self.actor.get_state()
-                target_actor_hx, target_actor_cx = self.target_actor.get_state()
-                critic_hx, critic_cx = self.critic.get_state()
-                target_critic_hx, target_critic_cx = self.target_critic.get_state()
                 
                 action = self.actor(self.PrePro(st))
-                target_action = self.target_actor(self.PrePro(st))
-                _ = self.critic(self.PrePro(st), action)
-                _ = self.target_critic(self.PrePro(st), target_action)
-
-                noise = torch.normal(mean=torch.zeros([self.num_env,1]),std=torch.ones([self.num_env,1])).to(self.dev)
+                Qv = self.critic(self.PrePro(st), action)
+                qmax = max(qmax,Qv.max())
+                qmin = min(qmin,Qv.min())
+                pmax = max(pmax,action.max())
+                pmin = min(pmin,action.min())
+                
+                
+                
+#                noise = torch.normal(mean=torch.zeros([self.num_env,1]),std=torch.ones([self.num_env,1])).to(self.dev)
 #                action = action.detach().item() +  np.random.normal(0, self.epsilon, (self.action_size))
 #                action = np.clip(action, -1, 1)
+                action = Qv.argmax().view(1,-1)
+                if self.epsilon>random.random():
+                    action = torch.LongTensor([random.randint(0,1)]).view(1,-1)
+                    
+#                m = torch.distributions.MultivariateNormal(torch.zeros([1,1]), torch.eye(1))
+#                action = action + m.sample().to(self.dev)*self.epsilon
+##                action  = action.clamp(min=0,max=1)
+#                
+#                if self.action_argmax:
+#                    act = action.argmax(1).cpu().numpy().item()
+#                else:
+#                    act = action.cpu().numpy()
                 
-                if self.action_argmax:
-                    act = action.argmax(1).cpu().numpy().item()
-                else:
-                    action = action.cpu().numpy()
-                if random.random()> self.epsilon:
-                    act = random.randint(0,1)
 #                action = (action+noise*self.epsilon).clamp(min=-1,max=1)
 
-                st_1, rt, dt = self.env.step(act)
-    
+                st_1, rt, dt = self.env.step(int(action.item()))
+                
                 reward_sum += rt
                 count_step += 1
                 gamma = torch.ones([self.num_env,1]).to(self.dev)*self.gamma*(1-dt)
@@ -338,8 +351,8 @@ class Actor:
                 self.sequence.append([st, action, rt, gamma])
                 st = st_1
 
-                self.recurrent_state.append([torch.cat([actor_hx, actor_cx]), torch.cat([target_actor_hx, target_actor_cx]), 
-                                                torch.cat([critic_hx, critic_cx]), torch.cat([target_critic_hx, target_critic_cx])])
+#                self.recurrent_state.append([torch.cat([actor_hx, actor_cx]), torch.cat([target_actor_hx, target_actor_cx]), 
+#                                                torch.cat([critic_hx, critic_cx]), torch.cat([target_critic_hx, target_critic_cx])])
 
 #                if True:
                 if self.shared_state["update"][self.actor_id]:
@@ -350,32 +363,34 @@ class Actor:
                     self.critic.load_state_dict(self.shared_state["critic"].state_dict())
                     self.target_critic.load_state_dict(self.shared_state["target_critic"].state_dict())
                     self.shared_state["update"][self.actor_id]=False
-                    print('actor_update',self.actor.policy_l0.weight.data[0][0])
+#                    print('actor_update',self.actor.policy_l0.weight.data[0][0])
 #                    self.load_model()
 
 
             if len(self.sequence) >= self.sequence_length:
-                #self.sequence.extend([(st, action, 0., 0.) for i in range(self.n_step)])
+#                self.sequence.extend([(st, action, 0., 0.) for i in range(self.n_step)])
+#                st, rt, dt = self.env.end_dummy()
+#                self.sequence.extend([[st,action, rt, dt] for i in range(self.n_step)])
                 st, rt, dt = self.env.end_dummy()
                 self.sequence.extend([[st,action, rt, dt] for i in range(self.n_step)])
-
-                self.calc_nstep_reward()
-                self.calc_priorities()
+                
+#                self.calc_nstep_reward()
+#                self.calc_priorities()
                 
                 
                 for i in range(len(self.sequence)):
                     for j in range(4):
                         self.sequence[i][j] = self.sequence[i][j].cpu()
-                for i in range(len(self.recurrent_state)):
-                    for j in range(4):
-                        self.recurrent_state[i][j] = self.recurrent_state[i][j].cpu()
+#                for i in range(len(self.recurrent_state)):
+#                    for j in range(4):
+#                        self.recurrent_state[i][j] = self.recurrent_state[i][j].cpu()
                 for i in range(len(self.priority)):
                     self.priority[i] = self.priority[i].cpu()
                 blocking = True if self.shared_queue.qsize()>self.max_shared_q_size else False
-                self.shared_queue.put([self.sequence, self.recurrent_state, self.priority],block=blocking)
+                self.shared_queue.put([self.sequence],block=blocking)
                 
 #            if self.actor_id == 0:
-            print('#',self.actor_id,'frame:', frame,'step:', count_step, 'reward:', reward_sum)
+            print('\r#',self.actor_id,'frame:', frame,'step:', count_step, 'reward: {:.3f}'.format(reward_sum.item()), 'qmin,max :{:.3f},{:.3f},  pminmax : {:.3f},{:.3f}'.format(qmin,qmax,pmin,pmax),end='\r')
                       
             
 #            if len(self.memory.memory) > self.memory_save_interval:
@@ -389,48 +404,90 @@ def actor_process(actor_id,config,dev_cpu,shared_state,shared_queue,eps):
 
     
 if __name__ == '__main__':
-    config = {
-            'game_name':'CartPole-v0',
-            'action_space':2,
-
-#           cartpole  state space 1,4
+#    config = {
+#            'game_name':'CartPole-v0',
+#
 #            'obs_space':(1,4),
 #            'reward_space':(1,1),
 #            'gamma_space':(1,1),
+#            'action_space':(1,2),
 #            'num_envs':1,
 #            'use_cnn':False,
 #            'action_argmax':True,
+#            'get_img_from_render':False,
+#            
+##            'obs_space':(1,3,84,84),
+##            'reward_space':(1,1),
+##            'gamma_space':(1,1),
+##            'num_envs':1,
+##            'use_cnn':True,
+##            'action_argmax':True,
+##            'get_img_from_render':True,
+##            
+##            'game_name':'Pendulum-v0',
+##            'action_space':1,
+##            'obs_space':(1,3),
+#            'burn_in_length':0,
+#            'learning_length':1,
+#            'n_step':1,
+#            'memory_sequence_size':500,
+##            'actor_parameter_update_interval':2000,
+#            'learner_parameter_update_interval':100,
+#            'actor_lr':1e-4,
+#            'critic_lr':1e-3,
+#            'gamma':0.997,
+#            'actor_max_frame':400,
+#            'learner_max_frame':200000,
+#            'batch_size':64,
+#            'num_processes':1,
+#            
+#            'learner_actor_rate':20,
+#            'target_update_interval':30,
+#            'max_shared_q_size':10,
+#            }
+    config = {
+            'game_name':'CartPole-v0',
 
-            'obs_space':(1,3,84,84),
+            'obs_space':(1,4),
             'reward_space':(1,1),
             'gamma_space':(1,1),
+            'action_space':(1,2),
             'num_envs':1,
-            'use_cnn':True,
-            'action_argmax':True,
-            'get_img_from_render':True,
+            'use_cnn':False,
+#            'action_argmax':True,
+            'get_img_from_render':False,
+
+#            'obs_space':(1,3,84,84),
+#            'reward_space':(1,1),
+#            'gamma_space':(1,1),
+#            'action_space':(1,2),
+#            'num_envs':1,
+#            'use_cnn':True,
+#            'action_argmax':True,
+#            'get_img_from_render':True,
 #            
+            'action_argmax':False,
 #            'game_name':'Pendulum-v0',
 #            'action_space':1,
 #            'obs_space':(1,3),
-            'burn_in_length':3,
-            'learning_length':6,
-            'n_step':3,
-            'memory_sequence_size':500,
+            'burn_in_length':0,
+            'learning_length':1,
+            'n_step':1,
+            'memory_sequence_size':10000,
 #            'actor_parameter_update_interval':2000,
-            'learner_parameter_update_interval':100,
+            'learner_parameter_update_interval':30,
             'actor_lr':1e-4,
             'critic_lr':1e-3,
             'gamma':0.997,
-            'actor_max_frame':400,
-            'learner_max_frame':200000,
+            'actor_max_frame':1000000,
+            'learner_max_frame':100000,
             'batch_size':64,
-            'num_processes':1,
+            'num_processes':2,
             
             'learner_actor_rate':20,
-            'target_update_interval':30,
-            'max_shared_q_size':10,
+            'target_update_interval':50,
+            'max_shared_q_size':30,
             }
-
     num_processes = config['num_processes']
     use_cuda = torch.cuda.is_available()
     dev_cpu = torch.device('cpu')

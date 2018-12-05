@@ -29,7 +29,6 @@ class ActorNet(nn.Module):
             self.front_1 = nn.Linear(in_features=128*2, out_features=128)
         
         
-        self.lstm = nn.LSTMCell(256, 128)
         self.policy_l0 = nn.Linear(128 , 32)
         self.policy_l1 = nn.Linear(32*2 , n_actions)
         
@@ -41,8 +40,6 @@ class ActorNet(nn.Module):
 #        self.l3.weight.data.uniform_(-init_w, init_w)
 #        self.l3.bias.data.fill_(init_b)
 
-        self.hx = None
-        self.cx = None
 
         self.dev = dev
         
@@ -58,14 +55,9 @@ class ActorNet(nn.Module):
             xx = F.relu(self.front_0(xx))
             xx = F.relu(self.front_1(torch.cat([xx,-xx],dim=1)))
         
-        if self.hx is None: # 300
-            self.hx = torch.zeros((xx.size()[0] ,128)).to(self.dev)
-            self.cx = torch.zeros((xx.size()[0] ,128)).to(self.dev)
         
-        self.hx, self.cx = self.lstm(torch.cat([xx,-xx],dim=1) , (self.hx, self.cx))
-        
-        policy = F.relu(self.policy_l0( self.hx ))
-        policy = torch.tanh(self.policy_l1(torch.cat([policy,-policy],dim=1)))
+        policy = F.relu(self.policy_l0( xx ))
+        policy = torch.sigmoid(self.policy_l1(torch.cat([policy,-policy],dim=1)))
         
         return policy
     
@@ -116,12 +108,11 @@ class CriticNet(nn.Module): # 400-300
             self.front_1 = nn.Linear(in_features=128*2, out_features=128)
         
         
-        self.lstm = nn.LSTMCell(256, 128)
         self.value_l0 = nn.Linear(128 , 32)
         self.value_l1 = nn.Linear(32*2 , 1)
         
-        self.adv_l0 = nn.Linear(128 + n_actions, 32)
-        self.adv_l1 = nn.Linear(32*2 , 1)
+        self.adv_l0 = nn.Linear(128 , 32)
+        self.adv_l1 = nn.Linear(32*2 , n_actions)
         
 #        self.l1 = nn.Linear(in_features=obs_size + n_actions, out_features=128)
 #        self.l2 = nn.LSTMCell(128, 128)
@@ -149,15 +140,10 @@ class CriticNet(nn.Module): # 400-300
             xx = F.relu(self.front_0(xx))
             xx= F.relu(self.front_1(torch.cat([xx,-xx],dim=1)))
         
-        if self.hx is None: # 300
-            self.hx = torch.zeros((xx.size()[0] ,128)).to(self.dev)
-            self.cx = torch.zeros((xx.size()[0] ,128)).to(self.dev)
-        
-        self.hx, self.cx = self.lstm(torch.cat([xx,-xx],dim=1) , (self.hx, self.cx))
-        val = F.relu(self.value_l0( self.hx ))
+        val = F.relu(self.value_l0( xx ))
         val = self.value_l1(torch.cat([val,-val],dim=1))
         
-        adv = F.relu(self.adv_l0(torch.cat([ self.hx, a],dim=1) ))
+        adv = F.relu(self.adv_l0(torch.cat([ xx],dim=1) ))
         adv = self.adv_l1(torch.cat([adv,-adv],dim=1))
         act_val = val+adv
         return act_val

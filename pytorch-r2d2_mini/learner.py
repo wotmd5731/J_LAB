@@ -46,7 +46,7 @@ class LearnerReplayMemory:
         self.obs_shape = (self.sequence_length+self.n_step,self.batch_size)+config['obs_space'][1:]
         self.reward_shape = (self.sequence_length+self.n_step,self.batch_size)+config['reward_space'][1:]
         self.gamma_shape = (self.sequence_length+self.n_step,self.batch_size)+config['gamma_space'][1:]
-        self.action_shape = (self.sequence_length+self.n_step,self.batch_size)+config['action_space'][1:]
+        self.action_shape = (self.sequence_length+self.n_step,self.batch_size)+config['reward_space'][1:]
         
         
     
@@ -64,15 +64,21 @@ class LearnerReplayMemory:
         self.total_priority.clear()
 
     def get_weighted_sample_index(self):
-        total_priority = torch.tensor(self.total_priority).view(-1)
+        ii = []
+        for i in range(self.batch_size):
+            ii.append(random.randint(0,len(self.memory)-1))
+        return ii
+#        total_priority = torch.tensor(self.total_priority).view(-1)
 #        print('priority : ',total_priority.size(0))
             
             
-        return torch.utils.data.WeightedRandomSampler(total_priority, self.batch_size, replacement=True)
+#        return torch.utils.data.WeightedRandomSampler(total_priority, self.batch_size, replacement=True)
+#        return torch.utils.data.BatchSampler(total_priority, self.batch_size ,drop_last=False)
+#        return torch.utils.data.BatchSampler(torch.utils.data.RandomSampler(total_priority), self.batch_size, drop_last=False)
     
     def sample(self):
         sample_episode_index = self.get_weighted_sample_index()
-        sample_episode_index = [index for index in sample_episode_index]
+#        sample_episode_index = [index for index in sample_episode_index][0]
 
         # batch * sequence * elements(obs, action, reward, done)
         sample_sequence_index = []
@@ -84,10 +90,13 @@ class LearnerReplayMemory:
 
         for episode_index in sample_episode_index:
             episode_trajectory = self.memory[episode_index]
-            priority = torch.tensor(self.priority[episode_index])
-            sequence_index = torch.utils.data.WeightedRandomSampler(priority, 1, replacement = True)
-            sequence_index = [index for index in sequence_index]
-            sequence_index = sequence_index[0]
+            sequence_index = random.randint(0,len(episode_trajectory)-2)
+#            priority = torch.tensor(self.priority[episode_index])
+#            sequence_index = torch.utils.data.BatchSampler(priority, 1,drop_last=False)
+#            sequence_index = torch.utils.data.BatchSampler(torch.utils.data.RandomSampler(priority), 1, drop_last=False)
+            
+#            sequence_index = [index for index in sequence_index]
+#            sequence_index = sequence_index[0][0]
             sample_sequence_index.append(sequence_index)
             
             ss,aa,rr,gg = zip(*(episode_trajectory[sequence_index: sequence_index + self.sequence_length+self.n_step]))
@@ -100,9 +109,6 @@ class LearnerReplayMemory:
 
             #trajectory_sequence_batch.append(episode_trajectory[sequence_index: sequence_index + self.sequence_length+self.n_step])
         
-            episode_rnn_state = self.recurrent_state[episode_index]
-            act,tact,cri,tcri = episode_rnn_state[sequence_index]
-            rnn_state_batch.append([act,tact,cri,tcri])
             #rnn_state_batch.append(episode_rnn_state[sequence_index])
 
         # elements(obs, action, reward, terminal) * sequence * batch
@@ -120,33 +126,19 @@ class LearnerReplayMemory:
 #        reward_batch_sequence = torch.Tensor(trajectory_batch_sequence[2]).to(self.dev)
 #        gamma_batch_sequence = torch.Tensor(trajectory_batch_sequence[3]).to(self.dev)
 
-        act,tact,cri,tcri = zip(*rnn_state_batch)
-        shape2 = (2,self.batch_size,-1)
-        actor_state_batch = torch.stack(act).reshape( shape2).to(self.dev)
-        target_actor_state_batch= torch.stack(tact).reshape( shape2).to(self.dev)
-        critic_state_batch = torch.stack(cri).reshape( shape2).to(self.dev)
-        target_critic_state_batch = torch.stack(tcri).reshape( shape2).to(self.dev)
 
-
-
-
-
-
-        return sample_episode_index, sample_sequence_index, obs_batch_sequence, action_batch_sequence, reward_batch_sequence, gamma_batch_sequence, \
-                actor_state_batch, target_actor_state_batch, critic_state_batch, target_critic_state_batch
+        return sample_episode_index, sample_sequence_index, obs_batch_sequence, action_batch_sequence, reward_batch_sequence, gamma_batch_sequence
 
     def append(self, data):
         self.memory.append(data[0])
-        self.recurrent_state.append(data[1])
-        self.priority.append(data[2])
-        self.total_priority.append(sum(data[2]))
-
+#        self.priority.append(data[1])
+#        self.total_priority.append(sum(data[1]))
+        
 #        self.sequence_counter += sum([len(data[0]) - (self.sequence_length+self.n_step-1) ])
         self.sequence_counter += 1
         while self.sequence_counter > self.memory_sequence_size:
 #            self.sequence_counter -= len(self.memory.popleft()) - (self.sequence_length)
             self.sequence_counter -= 1
-            self.recurrent_state.popleft()
             self.priority.popleft()
             self.total_priority.popleft()
 
@@ -154,8 +146,9 @@ class LearnerReplayMemory:
                 
                 
 def calc_priority(td_loss, eta=0.9):
-    stack = td_loss
-    return eta* stack.max(dim=0)[0] + (1.-eta )*stack.mean(dim=0)
+    return td_loss
+#    stack = td_loss
+#    return eta* stack.max(dim=0)[0] + (1.-eta )*stack.mean(dim=0)
 
 #    return eta * max((td_loss)) + (1. - eta) * (sum((td_loss)) / len(td_loss))       
                 
@@ -237,7 +230,6 @@ class Learner:
         
     def __del__(self):
         self.shared_queue.close()
-        self.shared_state.close()
 
                     
 #        self.save_model()
@@ -269,28 +261,6 @@ class Learner:
         
         
         while frame  < self.max_frame:
-#            sleep(0.0001)
-#            if self.shared_queue.qsize()==0 and count_mem <0:
-#                self.memory.append(self.shared_queue.get(block=True))
-#                
-#            for i in range(self.shared_queue.qsize()):
-#                self.memory.append(self.shared_queue.get(block=False))
-#                count_mem += self.learner_actor_rate
-                
-#            print('waiting  shared q {}/{}'.format(self.memory.size(),self.batch_size))
-            
-#            self.shared_state['frame'][self.id]=frame
-#            while self.shared_state['sleep'][self.id] :
-#                sleep(0.5)
-#            if self.shared_queue.qsize()==0 and count_mem <0:
-#                self.memory.append(self.shared_queue.get(block=True))
-#                self.memory.append(self.shared_queue.get())
-                
-#            for i in range(self.shared_queue.qsize()):
-##                global_buf.append(self.shared_queue.get())
-#                self.memory.append(self.shared_queue.get())
-#                count_mem += self.learner_actor_rate
-                
             
             if self.shared_queue.qsize()!=0:
                 self.memory.append(self.shared_queue.get(block=True))    
@@ -300,19 +270,8 @@ class Learner:
             
             count_mem -= 1
             
-            episode_index, sequence_index, obs_seq, action_seq, reward_seq, gamma_seq, a_state, ta_state, c_state, tc_state = self.memory.sample()
+            episode_index, sequence_index, obs_seq, action_seq, reward_seq, gamma_seq = self.memory.sample()
 
-            self.actor.set_state(a_state[0], a_state[1])
-            self.target_actor.set_state(ta_state[0], ta_state[1])
-            self.critic.set_state(c_state[0], c_state[1])
-            self.target_critic.set_state(tc_state[0], tc_state[1])
-
-            ### burn-in step ###
-            _ = [self.actor(obs_seq[i]) for i in range(self.burn_in_length)]
-            _ = [self.critic(obs_seq[i],action_seq[i]) for i in range(self.burn_in_length)]
-            _ = [self.target_actor(obs_seq[i]) for i in range(self.burn_in_length+self.n_step)]
-            _ = [self.target_critic(obs_seq[i],action_seq[i]) for i in range(self.burn_in_length+self.n_step)]
-            ### learning steps ###
 
             # update ciritic
             q_value = torch.zeros(self.learning_length * self.batch_size, self.n_actions)
@@ -321,13 +280,17 @@ class Learner:
             for i in range(self.learning_length):
                 obs_i = self.burn_in_length + i
                 next_obs_i = self.burn_in_length + i + self.n_step
-                q_value[i*self.batch_size: (i+1)*self.batch_size] = self.critic(obs_seq[obs_i], action_seq[obs_i])
-                with torch.no_grad():
-                    next_q_value = self.target_critic(obs_seq[next_obs_i], self.target_actor(obs_seq[next_obs_i]))
-                    target_q_val = reward_seq[obs_i] +  (gamma_seq[next_obs_i]** self.n_step) * next_q_value
-    #                target_q_val = invertical_vf(target_q_val)
-                    target_q_value[i*self.batch_size: (i+1)*self.batch_size] = target_q_val
+#                q_value[i*self.batch_size: (i+1)*self.batch_size] = self.critic(obs_seq[obs_i], action_seq[obs_i])
+                
+                q_value[i*self.batch_size: (i+1)*self.batch_size] = self.critic(obs_seq[obs_i], action_seq[obs_i]).gather(1,action_seq[obs_i])
+                
+                
+                next_q_value = self.target_critic(obs_seq[next_obs_i], self.target_actor(obs_seq[next_obs_i])).max(1)[0].view(-1,1)
+                target_q_val = reward_seq[obs_i] +  (gamma_seq[next_obs_i]** self.n_step) * next_q_value
+#                target_q_val = invertical_vf(target_q_val)
+                target_q_value[i*self.batch_size: (i+1)*self.batch_size] = target_q_val
             
+#            print(target_q_value.detach())
             critic_loss = self.actor_criterion(q_value, target_q_value.detach())
             self.critic_optimizer.zero_grad()
             critic_loss.backward()
@@ -336,37 +299,41 @@ class Learner:
 
 
             # update actor
-            self.actor.reset_state()
-            self.critic.reset_state()
-            actor_loss = torch.zeros(self.learning_length * self.batch_size, self.n_actions).to(self.dev)
-            for i in range(self.learning_length):
-                obs_i = i + self.burn_in_length
-                action = self.actor(obs_seq[obs_i])
-                actor_loss[i*self.batch_size: (i+1)*self.batch_size] = -self.critic(obs_seq[obs_i], self.actor(obs_seq[obs_i]))
-            actor_loss = actor_loss.mean()
+#            self.actor.reset_state()
+#            self.critic.reset_state()
+#            actor_loss = torch.zeros(self.learning_length * self.batch_size, self.n_actions).to(self.dev)
+#            for i in range(self.learning_length):
+#                obs_i = i + self.burn_in_length
+#                action = self.actor(obs_seq[obs_i])
+#                actor_loss[i*self.batch_size: (i+1)*self.batch_size] = -self.critic(obs_seq[obs_i], self.actor(obs_seq[obs_i]))
+#            actor_loss = actor_loss.mean()
 
-            self.actor_optimizer.zero_grad()
-            actor_loss.backward()
-            self.actor_optimizer.step()
+#            self.actor_optimizer.zero_grad()
+#            actor_loss.backward()
+#            self.actor_optimizer.step()
 
             # update target networks
             if frame % self.target_update_inverval == 0:
                 self.update_target_model()
                 
                 
-            print('#',frame,'critic_loss:',critic_loss.item(),'  actor_loss:',actor_loss.item() ,'  count:',count_mem)
-            win_p = vis.line(X=torch.Tensor([frame]), Y=torch.Tensor([actor_loss.item()]), win= win_p , update ='append')
+            print('#',frame,'critic_loss:',critic_loss.item(),'  count:',count_mem)
+#            win_p = vis.line(X=torch.Tensor([frame]), Y=torch.Tensor([actor_loss.item()]), win= win_p , update ='append')
             win_v = vis.line(X=torch.Tensor([frame]), Y=torch.Tensor([critic_loss.item()]), win= win_v , update ='append')
             
             
             # calc priority
-            average_td_loss = ((q_value - target_q_value)**2).detach().to(self.dev)
-            
+#            average_td_loss = ((q_value - target_q_value)**2).detach().to(self.dev)
+#            print(max(self.memory.total_priority))
 #            average_td_loss = np.mean(((q_value - target_q_value)**2).detach().cpu().numpy() , axis = 1)
-            for i in range(len(episode_index)):
-                td = average_td_loss[i: -1: self.batch_size]
-                self.memory.priority[episode_index[i]][sequence_index[i]] = calc_priority(td).cpu().view(1,-1)
-                self.memory.total_priority[episode_index[i]] = torch.cat(self.memory.priority[episode_index[i]]).sum(0).view(1,-1)
+#            for i in range(len(episode_index)):
+#                td = average_td_loss[i: -1: self.batch_size]
+#                td = average_td_loss[i]
+                
+#                print(self.memory.priority[episode_index[i]][sequence_index[i]] , calc_priority(td).cpu(), td)
+                
+#                self.memory.priority[episode_index[i]][sequence_index[i]] = calc_priority(td).cpu().view(1,-1)
+#                self.memory.total_priority[episode_index[i]] = torch.cat(self.memory.priority[episode_index[i]]).sum(0).view(1,-1)
                 
 #                self.memory.priority[episode_index[i]][sequence_index[i]] = calc_priority(td)
 #                self.memory.total_priority[episode_index[i]] = sum(self.memory.priority[episode_index[i]])
@@ -404,7 +371,7 @@ class Learner:
                 for i in range(self.num_actors):
                     self.shared_state["update"][i]=True
                 
-                print('learner_update',self.actor.policy_l0.weight.data[0][0])
+#                print('learner_update',self.actor.policy_l0.weight.data[0][0])
 
             self.actor.reset_state()
             self.target_actor.reset_state()
@@ -424,43 +391,45 @@ if __name__ == '__main__':
     config = {
             'game_name':'CartPole-v0',
 
-#           cartpole  state space 1,4
-#            'obs_space':(1,4),
-#            'reward_space':(1,1),
-#            'gamma_space':(1,1),
-#            'num_envs':1,
-#            'use_cnn':False,
-#            'action_argmax':True,
-
-            'obs_space':(1,3,84,84),
+            'obs_space':(1,4),
             'reward_space':(1,1),
             'gamma_space':(1,1),
             'action_space':(1,2),
             'num_envs':1,
-            'use_cnn':True,
-            'action_argmax':True,
-            'get_img_from_render':True,
+            'use_cnn':False,
+#            'action_argmax':True,
+            'get_img_from_render':False,
+
+#            'obs_space':(1,3,84,84),
+#            'reward_space':(1,1),
+#            'gamma_space':(1,1),
+#            'action_space':(1,2),
+#            'num_envs':1,
+#            'use_cnn':True,
+#            'action_argmax':True,
+#            'get_img_from_render':True,
 #            
+            'action_argmax':False,
 #            'game_name':'Pendulum-v0',
 #            'action_space':1,
 #            'obs_space':(1,3),
-            'burn_in_length':3,
-            'learning_length':6,
-            'n_step':3,
-            'memory_sequence_size':500,
+            'burn_in_length':0,
+            'learning_length':1,
+            'n_step':1,
+            'memory_sequence_size':100000,
 #            'actor_parameter_update_interval':2000,
             'learner_parameter_update_interval':100,
             'actor_lr':1e-4,
             'critic_lr':1e-3,
             'gamma':0.997,
-            'actor_max_frame':100,
+            'actor_max_frame':200,
             'learner_max_frame':10,
-            'batch_size':5,
+            'batch_size':3,
             'num_processes':1,
             
             'learner_actor_rate':20,
-            'target_update_interval':30,
-            'max_shared_q_size':50,
+            'target_update_interval':50,
+            'max_shared_q_size':30,
             }
 
     num_processes = config['num_processes']

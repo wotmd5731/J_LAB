@@ -17,6 +17,7 @@ import visdom
 
 vis = visdom.Visdom()
 
+os.system('cls')
 
 
 from actor import Actor, actor_process
@@ -35,7 +36,7 @@ if __name__ == '__main__':
             'action_space':(1,2),
             'num_envs':1,
             'use_cnn':False,
-            'action_argmax':True,
+#            'action_argmax':True,
             'get_img_from_render':False,
 
 #            'obs_space':(1,3,84,84),
@@ -47,26 +48,27 @@ if __name__ == '__main__':
 #            'action_argmax':True,
 #            'get_img_from_render':True,
 #            
+            'action_argmax':False,
 #            'game_name':'Pendulum-v0',
 #            'action_space':1,
 #            'obs_space':(1,3),
-            'burn_in_length':3,
-            'learning_length':3,
-            'n_step':3,
-            'memory_sequence_size':10000,
+            'burn_in_length':0,
+            'learning_length':1,
+            'n_step':1,
+            'memory_sequence_size':1000000,
 #            'actor_parameter_update_interval':2000,
-            'learner_parameter_update_interval':10000,
-            'actor_lr':1e-5,
+            'learner_parameter_update_interval':50,
+            'actor_lr':1e-4,
             'critic_lr':1e-4,
             'gamma':0.997,
             'actor_max_frame':1000000,
             'learner_max_frame':100000,
-            'batch_size':32,
-            'num_processes':4,
+            'batch_size':64,
+            'num_processes':1,
             
             'learner_actor_rate':20,
-            'target_update_interval':30,
-            'max_shared_q_size':30,
+            'target_update_interval':50,
+            'max_shared_q_size':5,
             }
 
 
@@ -113,10 +115,10 @@ if __name__ == '__main__':
 
 #
     proc_list = []
-    proc_list.append(mp.Process(target=learner_process, args=(num_processes, config,dev_gpu,shared_state,shared_queue)))
-    eps = [0.05,0.6,0.4,0.3,0.2,0.6,0.4,0.6,0.2,0.4]
+    proc_list.append(mp.Process(target=learner_process, args=(num_processes, config,dev_cpu,shared_state,shared_queue)))
+    eps = [0.10,0.6,0.4,0.3,0.2,0.6,0.4,0.6,0.2,0.4]
     for i in range(num_processes):
-        proc_list.append( mp.Process(target=actor_process, args=(i,config,dev_gpu,shared_state,shared_queue,eps[i])) )
+        proc_list.append( mp.Process(target=actor_process, args=(i,config,dev_cpu,shared_state,shared_queue,eps[i])) )
 
 
     for proc in proc_list:
