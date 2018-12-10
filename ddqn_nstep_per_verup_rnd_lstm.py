@@ -380,39 +380,10 @@ def update():
         burned_thx = torch.cat(burned_thx,0)
         burned_tcx = torch.cat(burned_tcx,0)
         
-    
-    y_t_hat = []
-    iy_t_hat = []
-    with torch.no_grad():
-        main_model.set_state(burned_hx,burned_cx)
-        target_model.set_state(burned_thx,burned_tcx)
-        for i in range(n_step):
-            _,_,_,_ = main_model(state[i])
-            _,_,_,_ = target_model(state[i])
-        for i in range(seq_len):
-            qv,_,iqv,_ = main_model(state[i+n_step])
-            _,tqa,_,tiqa = target_model(state[i+n_step])
-
-            y_t_hat.append(reward[i] + (gamma[i+n_step]**n_step)*qv.gather(1,tqa))
-            iy_t_hat.append(ireward[i] + (igamma[i+n_step]**n_step)*iqv.gather(1,tiqa))
-    
-    losses=[]
-    main_model.reset_state()
-    target_model.reset_state()
-    main_model.set_state(burned_hx,burned_cx)
-    target_model.set_state(burned_thx,burned_tcx)
-    for i in range(seq_len):
-        q,_,iq,_ = main_model(state[i])
-        td = q.gather(1,action[i]) - y_t_hat[i]
-        itd = iq.gather(1,action[i]) - iy_t_hat[i]
-        losses.append(td+itd)
-    
-    loss = torch.cat(losses,1)
-    
+    loss = calc_td(state, action, reward,gamma,ireward,igamma,mhx,mcx, thx,tcx,seq_len) 
     optimizer.zero_grad()
     loss.pow(2).mean().backward()
     optimizer.step()
-        
 #            pm,tm = rnd_model(state,nstate)
 #            rnd_loss = ((pm-tm)**2).mean()
 #            rnd_optimizer.zero_grad()
@@ -425,6 +396,35 @@ def update():
     
     return loss.pow(2).mean().item(),0
 
+def calc_td(state, action, reward,gamma,ireward,igamma,mhx,mcx, thx,tcx, story_len): 
+    y_t_hat = []
+    iy_t_hat = []
+    with torch.no_grad():
+        main_model.set_state(mhx,mcx)
+        target_model.set_state(thx,tcx)
+        for i in range(n_step):
+            _,_,_,_ = main_model(state[i])
+            _,_,_,_ = target_model(state[i])
+        for i in range(story_len):
+            qv,_,iqv,_ = main_model(state[i+n_step])
+            _,tqa,_,tiqa = target_model(state[i+n_step])
+
+            y_t_hat.append(reward[i] + (gamma[i+n_step]**n_step)*qv.gather(1,tqa))
+            iy_t_hat.append(ireward[i] + (igamma[i+n_step]**n_step)*iqv.gather(1,tiqa))
+    
+    losses=[]
+    main_model.reset_state()
+    target_model.reset_state()
+    main_model.set_state(mhx,mcx)
+    target_model.set_state(thx,tcx)
+    for i in range(story_len):
+        q,_,iq,_ = main_model(state[i])
+        td = q.gather(1,action[i]) - y_t_hat[i]
+        itd = iq.gather(1,action[i]) - iy_t_hat[i]
+        losses.append(td+itd)
+    
+    return loss = torch.cat(losses,1).abs()
+        
 import torchvision
 togray = torchvision.transforms.Grayscale()
 toten = torchvision.transforms.ToTensor()
@@ -481,51 +481,23 @@ for frame_idx in range(num_frames):
 #            for i in range(len(local_mem)-n_step):
 #                ll.append(local_mem[i][4])
 #            win_ir = vis.line(Y=torch.tensor(ll),win= win_ir)
-            def calc_priority(local_mem):
-                td_array    = []
-                with torch.no_grad():
-                    main_model.reset_state()
-                    target_model.reset_state()
-                    y_t_hat = []
-                    iy_t_hat = []
-                                
-                    for i in range(n_step):
-                        state = local_mem[i][0]
-                        _,_,_,_ = main_model(state)
-                        _,_,_,_ = target_model(state)
-                        
-                    
-                    for i in range(len(local_mem)-n_step):
-                        next_state = local_mem[i+n_step][0]
-                        reward  = torch.FloatTensor([local_mem[i][2]]).view(-1,1).to(dev)
-                        gamma  = torch.FloatTensor([local_mem[i+n_step][3]]).view(-1,1).to(dev)
-                        ireward  = torch.FloatTensor([local_mem[i][4]]).view(-1,1).to(dev)
-                        igamma  = torch.FloatTensor([local_mem[i+n_step][5]]).view(-1,1).to(dev)
-                        
-                        q,_,iq,_ = main_model(next_state)
-                        _,tqa,_,tiqa = target_model(next_state)
-                        
-                        y_t_hat.append(reward + (gamma**n_step)*q.gather(1,tqa))
-                        iy_t_hat.append(ireward + (igamma**n_step)*iq.gather(1,tiqa))
-                    
-                    
-                    main_model.reset_state()
-                    target_model.reset_state()
-                    for i in range(len(local_mem)-n_step):
-                        state = local_mem[i][0]
-                        action = torch.LongTensor([local_mem[i][1]]).reshape((-1,1)).to(dev)
-                        
-                        q,_,iq,_ = main_model(state)
-                        td = q.gather(1,action) - y_t_hat[i]
-                        itd = iq.gather(1,action) - iy_t_hat[i]
-                        
-                        td_array.append((td+itd).abs().view(-1))
+        main_model.reset_state()
+        target_model.reset_state()
+        mhx,mcx= main_model.get_state()
+        thx,tcx= target_model.get_state()
+        state,action,reward,gamma,ireward,igamma = zip(*local_mem)
 
-                    td_array = torch.cat(td_array).view(-1)
-                    return td_array
-        
-            td_array = calc_priority(local_mem)
-            replay_buffer.push(local_mem,td_array,state_mem)
+            b_len = len(local_mem)
+            state = torch.stack(state)
+            action = torch.LongTensor(action).reshape((b_len,1,1)).to(dev)
+            reward = torch.Tensor(reward).reshape((b_len,1,1)).to(dev)
+            gamma = torch.Tensor(gamma).reshape((b_len,1,1)).to(dev)
+            ireward = torch.Tensor(ireward).reshape((b_len,1,1)).to(dev)
+            igamma = torch.Tensor(igamma).reshape((b_len,1,1)).to(dev)
+            
+            td_array = calc_td(state,action,reward,gamma,ireward,igamma , mhx,mcx,thx,tcx, b_len-n_step)
+
+            replay_buffer.push([state,action,reward,gamma,ireward,igamma ],td_array,state_mem)
         
         state = env.reset()
         state = obs_preproc(env.render(mode='rgb_array')).to(dev)
