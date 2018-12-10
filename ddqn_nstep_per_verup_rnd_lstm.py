@@ -74,8 +74,9 @@ class ReplayBuffer():
         self.count += len(data) if not count_episode else 1
         priority = []
         eta = 0.9
-        for i in range(len(td_array)-seq_len):
-            p = (eta*td_array[i:i+seq_len].max()+(1.-eta)*td_array[i:i+seq_len].mean())**PER_alpha
+        td_loss = td_loss.view(-1)
+        for i in range(len(td_loss)-seq_len):
+            p = (eta*td_loss[i:i+seq_len].max()+(1.-eta)*td_loss[i:i+seq_len].mean())**PER_alpha
             priority.append(p)
             
         """
@@ -99,26 +100,17 @@ class ReplayBuffer():
             state_mem = self.buffer[episode_idx][4]
             
             ii = list(torch.utils.data.WeightedRandomSampler(priority , 1, True))[0]
-            
-            if ii-burn_in_len>=0:
-                brun_state = [episode[i][0] for i in range(ii-burn_in_len,ii)]
-                mhx,mcx, thx,tcx = state_mem[ii-burn_in_len]
+         
+            start = ii - brun_in_len if ii-burn_in_len>=0 else 0
+            brun_state = episode[0][start:ii]
+            mhx,mcx, thx,tcx = state_mem[start]
                 
-            else:
-                brun_state = [episode[i][0] for i in range(0,ii)]
-                mhx,mcx, thx,tcx = state_mem[0]
-                
-                
-            state , action , reward , gamma, ireward, igamma = zip(*episode[ii:ii + seq_len + n_step])
-            
-            
-            b_len = seq_len + n_step
-            state = torch.stack(state)
-            action = torch.LongTensor(action).reshape((b_len,1,1)).to(dev)
-            reward = torch.Tensor(reward).reshape((b_len,1,1)).to(dev)
-            gamma = torch.Tensor(gamma).reshape((b_len,1,1)).to(dev)
-            ireward = torch.Tensor(ireward).reshape((b_len,1,1)).to(dev)
-            igamma = torch.Tensor(igamma).reshape((b_len,1,1)).to(dev)
+            state   =episode[0][ii:ii+seq_len+n_step]  
+            action  =episode[1][ii:ii+seq_len+n_step]
+            reward  =episode[2][ii:ii+seq_len+n_step]
+            gamma   =episode[3][ii:ii+seq_len+n_step] 
+            ireward =episode[4][ii:ii+seq_len+n_step]
+            igamma  =episode[5][ii:ii+seq_len+n_step]
             
             s.append([episode_idx,ii,state,action,reward,gamma,ireward,igamma,mhx,mcx, thx,tcx ,brun_state])
 
@@ -375,10 +367,10 @@ def update():
             burned_thx.append(t_thx)
             burned_tcx.append(t_tcx)
         
-        burned_hx = torch.cat(burned_hx,0)
-        burned_cx = torch.cat(burned_cx,0)
-        burned_thx = torch.cat(burned_thx,0)
-        burned_tcx = torch.cat(burned_tcx,0)
+        mhx = torch.cat(burned_hx,0)
+        mcx = torch.cat(burned_cx,0)
+        thx = torch.cat(burned_thx,0)
+        tcx = torch.cat(burned_tcx,0)
         
     loss = calc_td(state, action, reward,gamma,ireward,igamma,mhx,mcx, thx,tcx,seq_len) 
     optimizer.zero_grad()
@@ -481,6 +473,7 @@ for frame_idx in range(num_frames):
 #            for i in range(len(local_mem)-n_step):
 #                ll.append(local_mem[i][4])
 #            win_ir = vis.line(Y=torch.tensor(ll),win= win_ir)
+    with torch.no_grad():
         main_model.reset_state()
         target_model.reset_state()
         mhx,mcx= main_model.get_state()
@@ -502,6 +495,7 @@ for frame_idx in range(num_frames):
         state = env.reset()
         state = obs_preproc(env.render(mode='rgb_array')).to(dev)
         episode_reward=0
+        gamma = 0.997
         all_rewards = []
         local_mem = []
         state_mem = []
