@@ -46,7 +46,7 @@ start_frame = 100
 num_frames = 50000
 batch_size =64
 vis_render=True
-
+EPS_CONST = 1
 burn_in_len = 5
 seq_len = 5
 env_id = 'CartPole-v0'
@@ -68,6 +68,7 @@ from collections import deque
 class ReplayBuffer():
     def __init__(self,capacity):
         self.win_bar = vis.bar(X=torch.rand([10]))
+        self.win_bar_td = vis.bar(X=torch.rand([10]))
 
         self.count = 0
         self.capacity = capacity
@@ -88,6 +89,7 @@ class ReplayBuffer():
         priority = torch.stack(priority).view(-1)
         td_loss_total = sum(priority)/len(priority)
         
+        vis.bar(X=td_loss.view(-1,1), win= self.win_bar_td, opts=dict(title='push td_loss'))
         self.buffer.append([data,td_loss,priority,td_loss_total,state_mem])
         while self.count > self.capacity:
             self.count -= self.buffer.popleft()[0][0].size(0)  if not count_episode else 1
@@ -103,7 +105,7 @@ class ReplayBuffer():
             
             ii = list(torch.utils.data.WeightedRandomSampler(priority , 1, True))[0]
          
-            start = ii - brun_in_len if ii-burn_in_len>=0 else 0
+            start = ii - burn_in_len if ii-burn_in_len>=0 else 0
             brun_state = episode[0][start:ii]
             mhx,mcx, thx,tcx = state_mem[start]
                 
@@ -161,7 +163,8 @@ class ReplayBuffer():
             bar.append(self.buffer[i][3])
 
 
-        vis.bar(X=torch.stack(bar), win= self.win_bar)
+        vis.bar(X=torch.stack(bar), win= self.win_bar, opts=dict(title='total priority'))
+        
 
             
             
@@ -427,7 +430,7 @@ def calc_td(state, action, reward,gamma,ireward,igamma,mhx,mcx, thx,tcx, story_l
         itd = iq.gather(1,action[i]) - iy_t_hat[i]
         losses.append(td+itd)
     
-    return loss = torch.cat(losses,1).abs()
+    return torch.cat(losses,1).abs()
         
 import torchvision
 togray = torchvision.transforms.Grayscale()
@@ -456,15 +459,14 @@ done = True
 gamma = 0.997
 state = env.reset()
 state = obs_preproc(env.render(mode='rgb_array')).to(dev)
-q_min=[]
-q_max=[]
+q_val=[]
 
 for frame_idx in range(num_frames):
     if done:
         if len(local_mem)!=0:
             vis.line(X=torch.tensor([frame_idx]), Y=torch.tensor([episode_reward]), win = win_r, update='append')
             vis.line(X=torch.tensor([frame_idx]), Y=torch.tensor([epsilon]), win = win_epsil, update='append')
-            vis.line(Y=torch.tensor([q_max,q_min]).view(-1,2), win= win_exp_q, opts=dict(title='exp_q'))            
+            vis.line(Y=torch.stack(q_val,0), win= win_exp_q, opts=dict(title='exp_q'))            
             for i in range(n_step):
                 local_mem.append([torch.zeros(state.size()).to(dev),0,0,0,0,0])
                 
@@ -515,11 +517,10 @@ for frame_idx in range(num_frames):
         state_mem = []
         main_model.reset_state()
         target_model.reset_state()
-        q_min = []
-        q_max = []
+        q_val = []
 
     print(repr(replay_buffer),end='\r')
-    epsilon= 0.01**(frame_idx/num_frames)
+    epsilon= 0.01**(EPS_CONST*frame_idx/num_frames)
     
     mhx,mcx = main_model.get_state()
     thx,tcx = target_model.get_state()
@@ -529,8 +530,7 @@ for frame_idx in range(num_frames):
     qv,qa,iqv,iqa = main_model(state)
     _,_,_,_ = target_model(state)
     action = qa.item() if random.random() > epsilon else random.randrange(a_dim)
-    q_min.append(qv.min())
-    q_max.append(qv.max())
+    q_val.append(qv)
     if vis_render:
         vis.image(state.view(84,84),win = win_img)
         
