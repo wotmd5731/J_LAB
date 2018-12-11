@@ -15,7 +15,7 @@ win_r = vis.line(Y=torch.tensor([0]),opts=dict(title='reward'))
 win_ir = vis.line(Y=torch.tensor([0]),opts=dict(title='ireward'))
 win_l0 = vis.line(Y=torch.tensor([0]),opts=dict(title='loss'))
 win_l1 = vis.line(Y=torch.tensor([0]),opts=dict(title='rnd_loss'))
-
+win_exp_q = vis.line(Y=torch.tensor([0]),opts=dict(title='exp_q'))
 #win_4 = vis.line(Y=torch.tensor([0]),opts=dict(title='reward'))
 
 from time import time
@@ -44,7 +44,7 @@ count_episode = False
 RND_const = 0
 start_frame = 100
 num_frames = 50000
-batch_size =32
+batch_size =64
 vis_render=True
 
 burn_in_len = 5
@@ -67,11 +67,13 @@ from collections import deque
 
 class ReplayBuffer():
     def __init__(self,capacity):
+        self.win_bar = vis.bar(X=torch.rand([10]))
+
         self.count = 0
         self.capacity = capacity
         self.buffer = deque(maxlen= capacity)
     def push(self, data, td_loss, state_mem):
-        self.count += len(data) if not count_episode else 1
+        self.count += data[0].size(0) if not count_episode else 1
         priority = []
         eta = 0.9
         td_loss = td_loss.view(-1)
@@ -88,7 +90,7 @@ class ReplayBuffer():
         
         self.buffer.append([data,td_loss,priority,td_loss_total,state_mem])
         while self.count > self.capacity:
-            self.count -= len(self.buffer.popleft()[0]) if not count_episode else 1
+            self.count -= self.buffer.popleft()[0][0].size(0)  if not count_episode else 1
 
     def sample(self,batch_size):
         weight = [self.buffer[i][3] for i in range(len(self.buffer))]
@@ -136,20 +138,31 @@ class ReplayBuffer():
     
     def priority_update(self,epi_idx,seq_idx,loss):
         td_array = self.buffer[epi_idx][1]
-        priority = self.buffer[epi_idx][2]
-        total_priority = self.buffer[epi_idx][3]
+#        priority = self.buffer[epi_idx][2]
+#        total_priority = self.buffer[epi_idx][3]
         
         for i in range(seq_len):
             td_array[seq_idx+i] = loss[i].abs()
 #        for i in range(seq_len):
 #            priority[seq_idx+i] = loss[i]
         
-        start = seq_idx-seq_len if seq_idx-seq_len >=0 else 0
-        
+        start = seq_idx-seq_len 
+        start = start if start>=0 else 0
+        end = seq_idx+seq_len
+        end = end if end<= len(td_array)-seq_len else len(td_array)-seq_len
+
         eta = 0.9
-        for i in range(start, start+seq_len):
+        for i in range(start, end):
             p = (eta*td_array[i:i+seq_len].max()+(1.-eta)*td_array[i:i+seq_len].mean())**PER_alpha
-            priority[i] = p
+            self.buffer[epi_idx][2][i] = p.view(-1)
+        self.buffer[epi_idx][3] = sum(self.buffer[epi_idx][2])/len(self.buffer[epi_idx][2])
+        bar = []
+        for i in range(len(self.buffer)):
+            bar.append(self.buffer[i][3])
+
+
+        vis.bar(X=torch.stack(bar), win= self.win_bar)
+
             
             
             
@@ -166,7 +179,6 @@ class ReplayBuffer():
         내부에서 prior 계산하여서 사용함.
         """
 #        priority = torch.stack(priority).view(-1)
-        total_priority = sum(priority)/len(priority)
         
         """
         우선순위 관련 모듈을 원래 바로 prior 줫는데 이거 업데이트가 힘들어서 td_loss를 주고 
@@ -444,13 +456,15 @@ done = True
 gamma = 0.997
 state = env.reset()
 state = obs_preproc(env.render(mode='rgb_array')).to(dev)
-        
+q_min=[]
+q_max=[]
+
 for frame_idx in range(num_frames):
     if done:
         if len(local_mem)!=0:
-            win_r = vis.line(X=torch.tensor([frame_idx]), Y=torch.tensor([episode_reward]), win = win_r, update='append')
-            win_epsil = vis.line(X=torch.tensor([frame_idx]), Y=torch.tensor([epsilon]), win = win_epsil, update='append')
-            
+            vis.line(X=torch.tensor([frame_idx]), Y=torch.tensor([episode_reward]), win = win_r, update='append')
+            vis.line(X=torch.tensor([frame_idx]), Y=torch.tensor([epsilon]), win = win_epsil, update='append')
+            vis.line(Y=torch.tensor([q_max,q_min]).view(-1,2), win= win_exp_q, opts=dict(title='exp_q'))            
             for i in range(n_step):
                 local_mem.append([torch.zeros(state.size()).to(dev),0,0,0,0,0])
                 
@@ -473,24 +487,24 @@ for frame_idx in range(num_frames):
 #            for i in range(len(local_mem)-n_step):
 #                ll.append(local_mem[i][4])
 #            win_ir = vis.line(Y=torch.tensor(ll),win= win_ir)
-    with torch.no_grad():
-        main_model.reset_state()
-        target_model.reset_state()
-        mhx,mcx= main_model.get_state()
-        thx,tcx= target_model.get_state()
-        state,action,reward,gamma,ireward,igamma = zip(*local_mem)
-
-            b_len = len(local_mem)
-            state = torch.stack(state)
-            action = torch.LongTensor(action).reshape((b_len,1,1)).to(dev)
-            reward = torch.Tensor(reward).reshape((b_len,1,1)).to(dev)
-            gamma = torch.Tensor(gamma).reshape((b_len,1,1)).to(dev)
-            ireward = torch.Tensor(ireward).reshape((b_len,1,1)).to(dev)
-            igamma = torch.Tensor(igamma).reshape((b_len,1,1)).to(dev)
-            
-            td_array = calc_td(state,action,reward,gamma,ireward,igamma , mhx,mcx,thx,tcx, b_len-n_step)
-
-            replay_buffer.push([state,action,reward,gamma,ireward,igamma ],td_array,state_mem)
+            with torch.no_grad():
+                main_model.reset_state()
+                target_model.reset_state()
+                mhx,mcx= main_model.get_state()
+                thx,tcx= target_model.get_state()
+                state,action,reward,gamma,ireward,igamma = zip(*local_mem)
+    
+                b_len = len(local_mem)
+                state = torch.stack(state)
+                action = torch.LongTensor(action).reshape((b_len,1,1)).to(dev)
+                reward = torch.Tensor(reward).reshape((b_len,1,1)).to(dev)
+                gamma = torch.Tensor(gamma).reshape((b_len,1,1)).to(dev)
+                ireward = torch.Tensor(ireward).reshape((b_len,1,1)).to(dev)
+                igamma = torch.Tensor(igamma).reshape((b_len,1,1)).to(dev)
+                
+                td_array = calc_td(state,action,reward,gamma,ireward,igamma , mhx,mcx,thx,tcx, b_len-n_step)
+    
+                replay_buffer.push([state,action,reward,gamma,ireward,igamma ],td_array,state_mem)
         
         state = env.reset()
         state = obs_preproc(env.render(mode='rgb_array')).to(dev)
@@ -501,6 +515,8 @@ for frame_idx in range(num_frames):
         state_mem = []
         main_model.reset_state()
         target_model.reset_state()
+        q_min = []
+        q_max = []
 
     print(repr(replay_buffer),end='\r')
     epsilon= 0.01**(frame_idx/num_frames)
@@ -513,17 +529,13 @@ for frame_idx in range(num_frames):
     qv,qa,iqv,iqa = main_model(state)
     _,_,_,_ = target_model(state)
     action = qa.item() if random.random() > epsilon else random.randrange(a_dim)
-    
+    q_min.append(qv.min())
+    q_max.append(qv.max())
     if vis_render:
-        win_img = vis.image(state.view(84,84),win = win_img)
-        
-    
+        vis.image(state.view(84,84),win = win_img)
         
     next_state , reward, done ,_ = env.step(action)
-    
-    
     next_state = obs_preproc(env.render(mode='rgb_array')).to(dev)
-    
     local_mem.append([state, action ,reward, gamma, 0 , 0])
     
     state = next_state
@@ -534,8 +546,8 @@ for frame_idx in range(num_frames):
         mhx,mcx = main_model.get_state()
         thx,tcx = target_model.get_state()
         loss, rnd_loss = update()
-        win_l0 = vis.line(X=torch.tensor([frame_idx]),Y=torch.tensor([loss]),win=win_l0,update ='append')
-        win_l1 = vis.line(X=torch.tensor([frame_idx]),Y=torch.tensor([rnd_loss]),win=win_l1,update ='append')
+        vis.line(X=torch.tensor([frame_idx]),Y=torch.tensor([loss]),win=win_l0,update ='append')
+        vis.line(X=torch.tensor([frame_idx]),Y=torch.tensor([rnd_loss]),win=win_l1,update ='append')
         main_model.set_state(mhx,mcx)
         target_model.set_state(thx,tcx)
             
@@ -546,7 +558,8 @@ for frame_idx in range(num_frames):
 
 
 
-
+print('done')
+env.close()
 
 
 
