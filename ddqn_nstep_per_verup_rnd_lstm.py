@@ -47,13 +47,34 @@ num_frames = 50000
 batch_size =64
 vis_render=True
 EPS_CONST = 1
+lr = 0.001
+rnd_lr = 0.00001
 burn_in_len = 5
-seq_len = 5
+mem_size = 5000
+seq_len = 7
 env_id = 'CartPole-v0'
 #env_id = 'MountainCar-v0'
 env = gym.make(env_id)
 s_dim = 1*frame_stack
 a_dim = 2
+state_shape = (1,1,84,84)
+import torchvision
+togray = torchvision.transforms.Grayscale()
+toten = torchvision.transforms.ToTensor()
+resize = torchvision.transforms.Resize((84,84))
+topil = torchvision.transforms.ToPILImage()
+def obs_preproc(x):
+    xten = toten(togray(resize(topil(x))))
+    return xten.reshape(state_shape)
+
+
+
+
+
+vis_render=False
+s_dim = 4
+state_shape = (1,1,4)
+
 
 
 use_cuda = False
@@ -320,10 +341,10 @@ main_model = DQN(s_dim, a_dim, dev ).to(dev)
 target_model = DQN(s_dim, a_dim, dev ).to(dev)
 rnd_model  = RND(s_dim).to(dev)
 
-optimizer = optim.Adam(main_model.parameters(),0.0003)
-rnd_optimizer = optim.Adam(rnd_model.parameters(),0.00001)
+optimizer = optim.Adam(main_model.parameters(),lr)
+rnd_optimizer = optim.Adam(rnd_model.parameters(),rnd_lr)
 
-replay_buffer = ReplayBuffer(10000)
+replay_buffer = ReplayBuffer(mem_size)
 
 def update_target(tar,cur):
     tar.load_state_dict(cur.state_dict())
@@ -432,14 +453,6 @@ def calc_td(state, action, reward,gamma,ireward,igamma,mhx,mcx, thx,tcx, story_l
     
     return torch.cat(losses,1).abs()
         
-import torchvision
-togray = torchvision.transforms.Grayscale()
-toten = torchvision.transforms.ToTensor()
-resize = torchvision.transforms.Resize((84,84))
-topil = torchvision.transforms.ToPILImage()
-def obs_preproc(x):
-    xten = toten(togray(resize(topil(x))))
-    return xten.view(1,1,84,84)
 
 
 
@@ -520,7 +533,8 @@ for frame_idx in range(num_frames):
         q_val = []
 
     print(repr(replay_buffer),end='\r')
-    epsilon= 0.01**(EPS_CONST*frame_idx/num_frames)
+#    epsilon= 0.01**(EPS_CONST*frame_idx/num_frames)
+    epsilon= 0.1
    
     with torch.no_grad():
         mhx,mcx = main_model.get_state()
