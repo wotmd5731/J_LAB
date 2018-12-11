@@ -466,7 +466,7 @@ for frame_idx in range(num_frames):
         if len(local_mem)!=0:
             vis.line(X=torch.tensor([frame_idx]), Y=torch.tensor([episode_reward]), win = win_r, update='append')
             vis.line(X=torch.tensor([frame_idx]), Y=torch.tensor([epsilon]), win = win_epsil, update='append')
-            vis.line(Y=torch.stack(q_val,0), win= win_exp_q, opts=dict(title='exp_q'))            
+            vis.line(Y=torch.cat(q_val,0), win= win_exp_q, opts=dict(title='exp_q'))            
             for i in range(n_step):
                 local_mem.append([torch.zeros(state.size()).to(dev),0,0,0,0,0])
                 
@@ -521,16 +521,15 @@ for frame_idx in range(num_frames):
 
     print(repr(replay_buffer),end='\r')
     epsilon= 0.01**(EPS_CONST*frame_idx/num_frames)
-    
-    mhx,mcx = main_model.get_state()
-    thx,tcx = target_model.get_state()
-    state_mem.append([mhx,mcx,thx,tcx])
-    
-    
-    qv,qa,iqv,iqa = main_model(state)
-    _,_,_,_ = target_model(state)
+   
+    with torch.no_grad():
+        mhx,mcx = main_model.get_state()
+        thx,tcx = target_model.get_state()
+        state_mem.append([mhx,mcx,thx,tcx])
+        qv,qa,iqv,iqa = main_model(state)
+        _,_,_,_ = target_model(state)
     action = qa.item() if random.random() > epsilon else random.randrange(a_dim)
-    q_val.append(qv)
+    q_val.append(qv.detach())
     if vis_render:
         vis.image(state.view(84,84),win = win_img)
         
