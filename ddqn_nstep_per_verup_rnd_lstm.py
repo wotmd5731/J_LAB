@@ -54,7 +54,8 @@ mem_size = 5000
 seq_len = 7
 env_id = 'CartPole-v0'
 #env_id = 'MountainCar-v0'
-env = gym.make(env_id)
+#env = gym.make(env_id)
+cnn_enable=True
 s_dim = 1*frame_stack
 a_dim = 2
 state_shape = (1,1,84,84)
@@ -67,14 +68,25 @@ def obs_preproc(x):
     xten = toten(togray(resize(topil(x))))
     return xten.reshape(state_shape)
 
+class env_cover():
+    def __init__(self,env_id):
+        self.env = gym.make(env_id)
+    def reset(self):
+        s = self.env.reset()
+        return torch.from_numpy(s).float().view(1,4).to(dev)
+    #return obs_preproc(env.render(mode='rgb_array')).to(dev)
+    def step(self,act):
+        ss,rr,dd,_ = self.env.step(act)
+        return torch.from_numpy(ss).float().view(1,4).to(dev),rr,dd,0
 
 
 
-
+cnn_enable = False
 vis_render=False
 s_dim = 4
 state_shape = (1,1,4)
 
+env = env_cover(env_id)
 
 
 use_cuda = False
@@ -103,10 +115,6 @@ class ReplayBuffer():
             p = (eta*td_loss[i:i+seq_len].max()+(1.-eta)*td_loss[i:i+seq_len].mean())**PER_alpha
             priority.append(p)
             
-        """
-        우선순위 관련 모듈을 원래 바로 prior 줫는데 이거 업데이트가 힘들어서 td_loss를 주고 
-        내부에서 prior 계산하여서 사용함.
-        """
         priority = torch.stack(priority).view(-1)
         td_loss_total = sum(priority)/len(priority)
         
@@ -198,16 +206,8 @@ class ReplayBuffer():
 #            p = (eta*td_array[i:i+seq_len].max()+(1.-eta)*td_array[i:i+seq_len].mean())**PER_alpha
 #            priority.append(p)
             
-        """
-        우선순위 관련 모듈을 원래 바로 prior 줫는데 이거 업데이트가 힘들어서 td_loss를 주고 
-        내부에서 prior 계산하여서 사용함.
-        """
 #        priority = torch.stack(priority).view(-1)
         
-        """
-        우선순위 관련 모듈을 원래 바로 prior 줫는데 이거 업데이트가 힘들어서 td_loss를 주고 
-        내부에서 prior 계산하여서 사용함.
-        """
 #        [data,td_loss,priority,td_loss_total,state_mem]
 #        self.buffer[epi_idx][2] = priority
 #        self.buffer[epi_idx][3] = td_loss_total
@@ -227,14 +227,20 @@ class Flatten(nn.Module):
 class DQN(nn.Module):
     def __init__(self, num_inputs, num_outputs, dev ):
         super(DQN,self).__init__()
-        size=7*7*64
-        self.feature = nn.Sequential(
-                nn.Conv2d(num_inputs,64,8,stride= 4),nn.ReLU(),
-                nn.Conv2d(64,64,4,stride=2),nn.ReLU(),
-                nn.Conv2d(64,64,3,stride=1),nn.ReLU(),
-                Flatten(),
-                nn.Linear(size,256),nn.ReLU(),
-                )
+        if cnn_enable:
+            size=7*7*64
+            self.feature = nn.Sequential(
+                    nn.Conv2d(num_inputs,64,8,stride= 4),nn.ReLU(),
+                    nn.Conv2d(64,64,4,stride=2),nn.ReLU(),
+                    nn.Conv2d(64,64,3,stride=1),nn.ReLU(),
+                    Flatten(),
+                    nn.Linear(size,256),nn.ReLU(),
+                    )
+        else :
+            self.feature = nn.Sequential(
+                    nn.Linear(4,256),nn.ReLU(),
+                    )
+
         self.lstm_size = 256
         self.lstm = nn.LSTMCell(self.lstm_size, self.lstm_size)
         
@@ -471,7 +477,6 @@ win_img = 0
 done = True
 gamma = 0.997
 state = env.reset()
-state = obs_preproc(env.render(mode='rgb_array')).to(dev)
 q_val=[]
 
 for frame_idx in range(num_frames):
@@ -522,7 +527,6 @@ for frame_idx in range(num_frames):
                 replay_buffer.push([state,action,reward,gamma,ireward,igamma ],td_array,state_mem)
         
         state = env.reset()
-        state = obs_preproc(env.render(mode='rgb_array')).to(dev)
         episode_reward=0
         gamma = 0.997
         all_rewards = []
@@ -548,7 +552,6 @@ for frame_idx in range(num_frames):
         vis.image(state.view(84,84),win = win_img)
         
     next_state , reward, done ,_ = env.step(action)
-    next_state = obs_preproc(env.render(mode='rgb_array')).to(dev)
     local_mem.append([state, action ,reward, gamma, 0 , 0])
     
     state = next_state
