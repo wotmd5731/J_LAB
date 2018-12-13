@@ -72,19 +72,23 @@ class env_cover():
     def __init__(self,env_id):
         self.env = gym.make(env_id)
     def reset(self):
-        s = self.env.reset()
-        return torch.from_numpy(s).float().view(1,4).to(dev)
+        ss = self.env.reset()
+        #ss = np.delete(ss,[1,3])
+        return torch.from_numpy(ss).float().view(1,s_dim).to(dev)
     #return obs_preproc(env.render(mode='rgb_array')).to(dev)
     def step(self,act):
         ss,rr,dd,_ = self.env.step(act)
-        return torch.from_numpy(ss).float().view(1,4).to(dev),rr,dd,0
+        #ss = np.delete(ss,[1,3])
+        return torch.from_numpy(ss).float().view(1,s_dim).to(dev),rr,dd,0
 
+    def close(self):
+        self.env.close()
 
 
 cnn_enable = False
 vis_render=False
 s_dim = 4
-state_shape = (1,1,4)
+state_shape = (1,1,s_dim)
 
 env = env_cover(env_id)
 
@@ -238,7 +242,7 @@ class DQN(nn.Module):
                     )
         else :
             self.feature = nn.Sequential(
-                    nn.Linear(4,256),nn.ReLU(),
+                    nn.Linear(s_dim,256),nn.ReLU(),
                     )
 
         self.lstm_size = 256
