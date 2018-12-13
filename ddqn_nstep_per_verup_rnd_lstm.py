@@ -38,12 +38,12 @@ n_step = 5
 PER_alpha = 0.9  # 0 is uniform per
 count_episode = False
 RND_const = 0
-start_frame = 100
+start_frame = 1000
 num_frames = 50000
 batch_size =128
 vis_render=True
 EPS_CONST = 1
-lr = 0.001
+lr = 0.0006
 rnd_lr = 0.00001
 burn_in_len = 5
 mem_size = 20000
@@ -99,14 +99,39 @@ import torch.utils.data
 from collections import deque
 
 class ReplayBuffer():
-    def __init__(self,capacity):
+    def __init__(self,capacity, mainQ, targetQ, shared_state):
         self.win_bar = vis.bar(X=torch.rand([10]))
         self.win_bar_td = vis.bar(X=torch.rand([10]))
 
         self.count = 0
         self.capacity = capacity
         self.buffer = deque(maxlen= capacity)
-    def push(self, data, td_loss, state_mem):
+        self.mainQ = mainQ
+        self.targetQ= targetQ
+        self.shared_state = shared_state
+    def push(self, data ):
+        
+#        [[state ,action,reward,gamma,ireward,igamma ],state_mem]
+        with torch.no_grad():
+            state   = data[0].to(dev)
+            action  = data[1].to(dev)
+            reward  = data[2].to(dev)
+            gamma   = data[3].to(dev)
+            ireward = data[4].to(dev)
+            igamma  = data[5].to(dev)
+            self.mainQ.reset_state()
+            self.targetQ.reset_state()
+            mhx, mcx = self.mainQ.get_state()
+            thx, tcx = self.targetQ.get_state()
+            b_len = state.size(0)
+            
+            td_loss, state_mem = calc_td(self.mainQ,self.targetQ,state,action,reward,gamma,ireward,igamma,
+                               mhx.to(dev),mcx.to(dev),thx.to(dev),tcx.to(dev), 
+                               b_len-n_step, stored_state=True)
+        
+        
+        
+        
         self.count += data[0].size(0) if not count_episode else 1
         priority = []
         eta = 0.9
@@ -116,9 +141,10 @@ class ReplayBuffer():
             priority.append(p)
             
         priority = torch.stack(priority).view(-1)
-        td_loss_total = sum(priority)/len(priority)
-        
-        vis.bar(X=td_loss.view(-1,1), win= self.win_bar_td, opts=dict(title='push td_loss'))
+#        td_loss_total = sum(priority)/len(priority)
+        td_loss_total = priority.max()
+        with self.shared_state["vis"].get_lock():
+            vis.bar(X=td_loss.cpu().view(-1,1), win= self.win_bar_td, opts=dict(title='push td_loss'))
         self.buffer.append([data,td_loss,priority,td_loss_total,state_mem])
         while self.count > self.capacity:
             self.count -= self.buffer.popleft()[0][0].size(0)  if not count_episode else 1
@@ -194,8 +220,8 @@ class ReplayBuffer():
         for i in range(len(self.buffer)):
             bar.append(self.buffer[i][3])
 
-
-        vis.bar(X=torch.stack(bar), win= self.win_bar, opts=dict(title='total priority'))
+        with self.shared_state["vis"].get_lock():
+            vis.bar(X=torch.stack(bar), win= self.win_bar, opts=dict(title='total priority'))
         
 
             
@@ -306,9 +332,9 @@ class DQN(nn.Module):
 
     def get_state(self):
         if self.hx is None:
-            return torch.zeros((1 ,self.lstm_size)).cpu(), torch.zeros((1 ,self.lstm_size)).cpu()
+            return torch.zeros((1 ,self.lstm_size)).to(self.dev), torch.zeros((1 ,self.lstm_size)).to(self.dev)
         else:
-            return self.hx.detach().cpu(), self.cx.detach().cpu()
+            return self.hx.detach(), self.cx.detach()
         
 
 class RND(nn.Module):
@@ -355,19 +381,32 @@ def update_target(tar,cur):
     tar.load_state_dict(cur.state_dict())
 
 
-def calc_td(main_model,target_model,state, action, reward,gamma,ireward,igamma,mhx,mcx, thx,tcx, story_len): 
+def calc_td(main_model,target_model,state, action, reward,gamma,ireward,igamma,mhx,mcx, thx,tcx, story_len, stored_state =False): 
     y_t_hat = []
     iy_t_hat = []
+    state_mem = []
     with torch.no_grad():
         main_model.set_state(mhx,mcx)
         target_model.set_state(thx,tcx)
+        if stored_state:
+            mhx,mcx = main_model.get_state()
+            thx,tcx = target_model.get_state()
+            state_mem.append([mhx,mcx,thx,tcx])
+            
         for i in range(n_step):
             _,_,_,_ = main_model(state[i])
             _,_,_,_ = target_model(state[i])
+            if stored_state:
+                mhx,mcx = main_model.get_state()
+                thx,tcx = target_model.get_state()
+                state_mem.append([mhx,mcx,thx,tcx])
         for i in range(story_len):
             qv,_,iqv,_ = main_model(state[i+n_step])
             _,tqa,_,tiqa = target_model(state[i+n_step])
-
+            if stored_state:
+                mhx,mcx = main_model.get_state()
+                thx,tcx = target_model.get_state()
+                state_mem.append([mhx,mcx,thx,tcx])
             y_t_hat.append(reward[i] + (gamma[i+n_step]**n_step)*qv.gather(1,tqa))
             iy_t_hat.append(ireward[i] + (igamma[i+n_step]**n_step)*iqv.gather(1,tiqa))
     
@@ -382,7 +421,7 @@ def calc_td(main_model,target_model,state, action, reward,gamma,ireward,igamma,m
         itd = iq.gather(1,action[i]) - iy_t_hat[i]
         losses.append(td+itd)
     
-    return torch.cat(losses,1).abs()
+    return torch.cat(losses,1).abs(), state_mem
         
 
 
@@ -396,11 +435,11 @@ def actor_process(a_id,num_frames,shared_state,shared_queue,block=True, eps=0.1)
 
           
     mainQ = DQN(s_dim, a_dim, dev ).to(dev)
-    targetQ = DQN(s_dim, a_dim, dev ).to(dev)
+#    targetQ = DQN(s_dim, a_dim, dev ).to(dev)
     rnd_model  = RND(s_dim).to(dev)
     
     mainQ.load_state_dict(shared_state["mainQ"].state_dict())
-    targetQ.load_state_dict(shared_state["targetQ"].state_dict())
+#    targetQ.load_state_dict(shared_state["targetQ"].state_dict())
      
     episode_reward=0
     local_mem = []
@@ -415,9 +454,10 @@ def actor_process(a_id,num_frames,shared_state,shared_queue,block=True, eps=0.1)
             
             
             if len(local_mem)!=0:
-                vis.line(X=torch.tensor([frame_idx]), Y=torch.tensor([episode_reward]), win = win_r, update='append')
-#                vis.line(X=torch.tensor([frame_idx]), Y=torch.tensor([epsilon]), win = win_epsil, update='append')
-                vis.line(Y=torch.cat(q_val,0), win= win_exp_q, opts=dict(title='exp_q'+str(a_id)))            
+                with shared_state["vis"].get_lock():
+                    vis.line(X=torch.tensor([frame_idx]), Y=torch.tensor([episode_reward]), win = win_r, update='append')
+    #                vis.line(X=torch.tensor([frame_idx]), Y=torch.tensor([epsilon]), win = win_epsil, update='append')
+                    vis.line(Y=torch.cat(q_val,0), win= win_exp_q, opts=dict(title='exp_q'+str(a_id)))            
                 for i in range(n_step):
                     local_mem.append([torch.zeros(state.size()).to(dev),0,0,0,0,0])
                     
@@ -442,9 +482,9 @@ def actor_process(a_id,num_frames,shared_state,shared_queue,block=True, eps=0.1)
     #            win_ir = vis.line(Y=torch.tensor(ll),win= win_ir)
                 with torch.no_grad():
                     mainQ.reset_state()
-                    targetQ.reset_state()
+#                    targetQ.reset_state()
                     mhx,mcx= mainQ.get_state()
-                    thx,tcx= targetQ.get_state()
+#                    thx,tcx= targetQ.get_state()
                     state,action,reward,gamma,ireward,igamma = zip(*local_mem)
         
                     b_len = len(local_mem)
@@ -455,23 +495,8 @@ def actor_process(a_id,num_frames,shared_state,shared_queue,block=True, eps=0.1)
                     ireward = torch.Tensor(ireward).reshape((b_len,1,1))
                     igamma = torch.Tensor(igamma).reshape((b_len,1,1))
                     
-                    td_array = calc_td(mainQ.to(dev),
-                                       targetQ.to(dev),
-                                       state.to(dev),
-                                       action.to(dev),
-                                       reward.to(dev),
-                                       gamma.to(dev),
-                                       ireward.to(dev),
-                                       igamma.to(dev) ,
-                                       mhx.to(dev),
-                                       mcx.to(dev),
-                                       thx.to(dev),
-                                       tcx.to(dev), 
-                                       b_len-n_step)
-                    
-                    
                     blocking = True if shared_queue.qsize()>max_shared_q_size and block else False
-                    shared_queue.put([[state.cpu() ,action,reward,gamma,ireward,igamma ],td_array.cpu(),state_mem],block=blocking)
+                    shared_queue.put([state.cpu() ,action,reward,gamma,ireward,igamma ],block=blocking)
                     
                 if block == False:
                     return 0
@@ -482,7 +507,7 @@ def actor_process(a_id,num_frames,shared_state,shared_queue,block=True, eps=0.1)
             local_mem = []
             state_mem = []
             mainQ.reset_state()
-            targetQ.reset_state()
+#            targetQ.reset_state()
             q_val = []
             
             
@@ -493,10 +518,11 @@ def actor_process(a_id,num_frames,shared_state,shared_queue,block=True, eps=0.1)
        
         with torch.no_grad():
             mhx,mcx = mainQ.get_state()
-            thx,tcx = targetQ.get_state()
-            state_mem.append([mhx,mcx,thx,tcx])
+#            thx,tcx = targetQ.get_state()
+#            state_mem.append([mhx,mcx,thx,tcx])
+#            state_mem.append([mhx,mcx])
             qv,qa,iqv,iqa = mainQ(state)
-            _,_,_,_ = targetQ(state)
+#            _,_,_,_ = targetQ(state)
             
         action = qa.item() if random.random() > epsilon else random.randrange(a_dim)
         
@@ -513,7 +539,7 @@ def actor_process(a_id,num_frames,shared_state,shared_queue,block=True, eps=0.1)
         
         if shared_state["update"][a_id]:
             mainQ.load_state_dict(shared_state["mainQ"].state_dict())
-            targetQ.load_state_dict(shared_state["targetQ"].state_dict())
+#            targetQ.load_state_dict(shared_state["targetQ"].state_dict())
             shared_state["update"][a_id]=False
             
             print('actor_update',mainQ.value[0].weight[0][0:5])
@@ -526,112 +552,117 @@ def actor_process(a_id,num_frames,shared_state,shared_queue,block=True, eps=0.1)
     
     
 def learner_process(max_id,num_frames,shared_state,shared_queue,block=True):
-    win_ir = vis.line(Y=torch.tensor([0]),opts=dict(title='ireward'))
-    win_l0 = vis.line(Y=torch.tensor([0]),opts=dict(title='loss'))
-    win_l1 = vis.line(Y=torch.tensor([0]),opts=dict(title='rnd_loss'))
-    
-    mainQ = DQN(s_dim, a_dim, dev ).to(dev)
-    targetQ = DQN(s_dim, a_dim, dev ).to(dev)
-    rnd_model  = RND(s_dim).to(dev)
-    
-    mainQ.load_state_dict(shared_state["mainQ"].state_dict())
-    targetQ.load_state_dict(shared_state["targetQ"].state_dict())
+    try:
+        win_ir = vis.line(Y=torch.tensor([0]),opts=dict(title='ireward'))
+        win_l0 = vis.line(Y=torch.tensor([0]),opts=dict(title='loss'))
+        win_l1 = vis.line(Y=torch.tensor([0]),opts=dict(title='rnd_loss'))
+        
+        mainQ = DQN(s_dim, a_dim, dev ).to(dev)
+        targetQ = DQN(s_dim, a_dim, dev ).to(dev)
+        rnd_model  = RND(s_dim).to(dev)
+        
+        mainQ.load_state_dict(shared_state["mainQ"].state_dict())
+        targetQ.load_state_dict(shared_state["targetQ"].state_dict())
+                        
+        optimizer = optim.Adam(mainQ.parameters(),lr)
+        rnd_optimizer = optim.Adam(rnd_model.parameters(),rnd_lr)
+        
+        
+        replay_buffer = ReplayBuffer(mem_size,mainQ , targetQ,shared_state)
+        def soft_update(target_model, model, tau):
+            for target_param, param in zip(target_model.parameters(), model.parameters()):
+                target_param.data.copy_(target_param.data * (1.0 - tau) + param.data * tau)
+        def update():
+            epi_idx,seq_idx,state, action, reward,gamma,ireward,igamma,mhx,mcx, thx,tcx, burn_state = replay_buffer.sample(batch_size)
+            
+            burned_hx = []
+            burned_cx = []
+            burned_thx = []
+            burned_tcx = []
+            with torch.no_grad():
+                for i in range(batch_size):
+                    mainQ.reset_state()
+                    targetQ.reset_state()
                     
-    optimizer = optim.Adam(mainQ.parameters(),lr)
-    rnd_optimizer = optim.Adam(rnd_model.parameters(),rnd_lr)
-    
-    
-    replay_buffer = ReplayBuffer(mem_size)
-    def soft_update(target_model, model, tau):
-        for target_param, param in zip(target_model.parameters(), model.parameters()):
-            target_param.data.copy_(target_param.data * (1.0 - tau) + param.data * tau)
-    def update():
-        epi_idx,seq_idx,state, action, reward,gamma,ireward,igamma,mhx,mcx, thx,tcx, burn_state = replay_buffer.sample(batch_size)
-        
-        burned_hx = []
-        burned_cx = []
-        burned_thx = []
-        burned_tcx = []
-        with torch.no_grad():
-            for i in range(batch_size):
-                mainQ.reset_state()
-                targetQ.reset_state()
+                    mainQ.set_state(mhx[i],mcx[i])
+                    targetQ.set_state(thx[i],tcx[i])
+                    
+                    for j in range(len(burn_state[i])):
+                        _,_,_,_ = mainQ(burn_state[i][j])
+                        _,_,_,_ = targetQ(burn_state[i][j])
+                    
+                    t_mhx,t_mcx = mainQ.get_state()
+                    burned_hx.append(t_mhx)
+                    burned_cx.append(t_mcx)
+                    
+                    t_thx,t_tcx = targetQ.get_state()
+                    burned_thx.append(t_thx)
+                    burned_tcx.append(t_tcx)
                 
-                mainQ.set_state(mhx[i],mcx[i])
-                targetQ.set_state(thx[i],tcx[i])
+                mhx = torch.cat(burned_hx,0).to(dev)
+                mcx = torch.cat(burned_cx,0).to(dev)
+                thx = torch.cat(burned_thx,0).to(dev)
+                tcx = torch.cat(burned_tcx,0).to(dev)
                 
-                for j in range(len(burn_state[i])):
-                    _,_,_,_ = mainQ(burn_state[i][j])
-                    _,_,_,_ = targetQ(burn_state[i][j])
-                
-                t_mhx,t_mcx = mainQ.get_state()
-                burned_hx.append(t_mhx)
-                burned_cx.append(t_mcx)
-                
-                t_thx,t_tcx = targetQ.get_state()
-                burned_thx.append(t_thx)
-                burned_tcx.append(t_tcx)
+            loss,_ = calc_td(mainQ,targetQ,state, action, reward,gamma,ireward,igamma,mhx,mcx, thx,tcx,seq_len) 
+            optimizer.zero_grad()
+            loss.pow(2).mean().backward()
+            optimizer.step()
+        #            pm,tm = rnd_model(state,nstate)
+        #            rnd_loss = ((pm-tm)**2).mean()
+        #            rnd_optimizer.zero_grad()
+        #            rnd_loss.backward()
+        #            rnd_optimizer.step()
             
-            mhx = torch.cat(burned_hx,0).to(dev)
-            mcx = torch.cat(burned_cx,0).to(dev)
-            thx = torch.cat(burned_thx,0).to(dev)
-            tcx = torch.cat(burned_tcx,0).to(dev)
+            for i in range(len(epi_idx)):
+                replay_buffer.priority_update(epi_idx[i],seq_idx[i],loss[i].detach())
             
-        loss = calc_td(mainQ,targetQ,state, action, reward,gamma,ireward,igamma,mhx,mcx, thx,tcx,seq_len) 
-        optimizer.zero_grad()
-        loss.pow(2).mean().backward()
-        optimizer.step()
-    #            pm,tm = rnd_model(state,nstate)
-    #            rnd_loss = ((pm-tm)**2).mean()
-    #            rnd_optimizer.zero_grad()
-    #            rnd_loss.backward()
-    #            rnd_optimizer.step()
+            return loss.pow(2).mean().item(),0
         
-        for i in range(len(epi_idx)):
-            replay_buffer.priority_update(epi_idx[i],seq_idx[i],loss[i].detach())
+    #    if len(replay_buffer)==0:
+        if block==False:
+            if shared_queue.qsize()<2 :
+                print('return  shared q size > 2 ')
+                return 0
+            data = shared_queue.get(block=True)
+            replay_buffer.push(data)
+            
         
-        return loss.pow(2).mean().item(),0
+        while len(replay_buffer) < start_frame and block:
+            
+            data = shared_queue.get(block=True)
+            replay_buffer.push(data)
+            print(repr(replay_buffer),end='\r')
+        
+        
+        for frame_idx in range(num_frames):
+            print(repr(replay_buffer),end='\r')
+            if shared_queue.qsize()!=0:
+#            while shared_queue.qsize() != 0:
+                data = shared_queue.get()
+                replay_buffer.push(data)
     
-#    if len(replay_buffer)==0:
-    if block==False:
-        if shared_queue.qsize()<2 :
-            print('return  shared q size > 2 ')
-            return 0
-        data = shared_queue.get(block=True)
-        replay_buffer.push(data[0],data[1],data[2])
+            loss, rnd_loss = update()
+            print(f'#learner  l:{loss:.5f}')
+            with shared_state["vis"].get_lock():
+                vis.line(X=torch.tensor([frame_idx]),Y=torch.tensor([loss]),win=win_l0,update ='append')
+                vis.line(X=torch.tensor([frame_idx]),Y=torch.tensor([rnd_loss]),win=win_l1,update ='append')
+            
+            if frame_idx % 4 == 0:
+    #        if random.random() < 1/10 :
+                soft_update(targetQ,mainQ,0.3)
+#                update_target(targetQ,mainQ)
+            if frame_idx % 3 == 0:
+    #        if random.random() < 1/20 :
+                shared_state["mainQ"].load_state_dict(mainQ.state_dict())
+                shared_state["targetQ"].load_state_dict(targetQ.state_dict())
+                for i in range(max_id):
+                    shared_state["update"][i]=True
+            if block == False:
+                return 0
+    except Exception as e:        
+        print(e)
         
-    
-    while len(replay_buffer) < start_frame and block:
-        print(repr(replay_buffer),end='\r')
-        data = shared_queue.get(block=True)
-        replay_buffer.push(data[0],data[1],data[2])
-    
-    
-    for frame_idx in range(num_frames):
-        
-#        if shared_queue.qsize()!=0:
-        while shared_queue.qsize() != 0:
-            data = shared_queue.get()
-            replay_buffer.push(data[0],data[1],data[2])
-
-        loss, rnd_loss = update()
-        print(f'#learner  l:{loss:.5f}')
-        vis.line(X=torch.tensor([frame_idx]),Y=torch.tensor([loss]),win=win_l0,update ='append')
-        vis.line(X=torch.tensor([frame_idx]),Y=torch.tensor([rnd_loss]),win=win_l1,update ='append')
-        
-#        if frame_idx % 1000 == 0:
-        if random.random() < 1/10 :
-            update_target(targetQ,mainQ)
-#        if frame_idx % 3000 == 0:
-        if random.random() < 1/20 :
-            shared_state["mainQ"].load_state_dict(mainQ.state_dict())
-            shared_state["targetQ"].load_state_dict(targetQ.state_dict())
-            for i in range(max_id):
-                shared_state["update"][i]=True
-        if block == False:
-            return 0
-                
-                
 
 
 if __name__ == '__main__':
@@ -648,15 +679,16 @@ if __name__ == '__main__':
     shared_state["targetQ"] =  DQN(s_dim, a_dim, dev ).share_memory()
     
     shared_state["update"] = mp.Array('i', [0 for i in range(num_processes)])
+    shared_state["vis"] = mp.Value('i',0)
     
-#    actor_process(0,num_frames,shared_state,shared_queue,False)
+    
+    
 #    for i in range(100):
 #        actor_process(0,num_frames,shared_state,shared_queue,False)
+#        actor_process(0,num_frames,shared_state,shared_queue,False)
 #        learner_process(1,num_frames,shared_state,shared_queue,False)
-    
-#
 #    time.sleep(10)
-    
+##    
     proc_list = []
     proc_list.append(mp.Process(target=learner_process, args=(num_processes,num_frames,shared_state,shared_queue)))
     eps = [0.1,0.2,0.4,0.3,0.2,0.6,0.4,0.6,0.2,0.4]
