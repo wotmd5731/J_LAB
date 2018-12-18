@@ -14,12 +14,14 @@ vis = visdom.Visdom(port = 8097)
 import torch.multiprocessing as mp
 #win_4 = vis.line(Y=torch.tensor([0]),opts=dict(title='reward'))
 
-from time import time
-ttime= time()
+
+import time
+
+ttime= time.time()
 def time_check(num=0):
     global ttime
-    print(f'{num} time:{time()-ttime}')
-    ttime = time()
+    print(f'{num} time:{time.time()-ttime}')
+    ttime = time.time()
 
 """
 +double
@@ -40,7 +42,7 @@ count_episode = False
 RND_const = 0
 start_frame = 1000
 num_frames = 50000
-batch_size =128
+batch_size =32
 vis_render=True
 EPS_CONST = 1
 lr = 0.0006
@@ -49,7 +51,7 @@ burn_in_len = 5
 mem_size = 20000
 seq_len = 7
 env_id = 'CartPole-v0'
-#env_id = 'MountainCar-v0'
+
 #env = gym.make(env_id)
 cnn_enable=True
 s_dim = 1*frame_stack
@@ -83,8 +85,13 @@ class env_cover():
 
 cnn_enable = False
 vis_render=False
-s_dim = 4
+s_dim = 2
 state_shape = (1,1,s_dim)
+a_dim = 3
+
+env_id = 'MountainCar-v0'
+
+
 
 env = env_cover(env_id)
 
@@ -223,25 +230,6 @@ class ReplayBuffer():
         with self.shared_state["vis"].get_lock():
             vis.bar(X=torch.stack(bar), win= self.win_bar, opts=dict(title='total priority'))
         
-
-            
-            
-            
-#        eta = 0.9
-#        p = (eta * loss.max(1) + (1.-eta)*loss.mean(1))**PER_alpha
-#        priority = []
-#        eta = 0.9
-#        for i in range(len(td_array)-seq_len):
-#            p = (eta*td_array[i:i+seq_len].max()+(1.-eta)*td_array[i:i+seq_len].mean())**PER_alpha
-#            priority.append(p)
-            
-#        priority = torch.stack(priority).view(-1)
-        
-#        [data,td_loss,priority,td_loss_total,state_mem]
-#        self.buffer[epi_idx][2] = priority
-#        self.buffer[epi_idx][3] = td_loss_total
-        
-#        self.buffer[epi_idx][2] = sum(self.buffer[epi_idx][1][:])/len(self.buffer[epi_idx][1][:])
     def __len__(self):
         return self.count
     def __repr__(self):
@@ -259,39 +247,39 @@ class DQN(nn.Module):
         if cnn_enable:
             size=7*7*64
             self.feature = nn.Sequential(
-                    nn.Conv2d(num_inputs,64,8,stride= 4),nn.ReLU(),
-                    nn.Conv2d(64,64,4,stride=2),nn.ReLU(),
-                    nn.Conv2d(64,64,3,stride=1),nn.ReLU(),
+                    nn.Conv2d(num_inputs,64,8,stride= 4),nn.PReLU(),
+                    nn.Conv2d(64,64,4,stride=2),nn.PReLU(),
+                    nn.Conv2d(64,64,3,stride=1),nn.PReLU(),
                     Flatten(),
-                    nn.Linear(size,256),nn.ReLU(),
+                    nn.Linear(size,128),nn.PReLU(),
                     )
         else :
             self.feature = nn.Sequential(
-                    nn.Linear(s_dim,256),nn.ReLU(),
+                    nn.Linear(s_dim,128),nn.PReLU(),
                     )
 
-        self.lstm_size = 256
+        self.lstm_size = 128
         self.lstm = nn.LSTMCell(self.lstm_size, self.lstm_size)
         
         self.advantage = nn.Sequential(
-                nn.Linear(self.lstm_size,256),nn.ReLU(),
-                nn.Linear(256,256),nn.ReLU(),
-                nn.Linear(256,num_outputs),
+                nn.Linear(self.lstm_size,128),nn.PReLU(),
+                nn.Linear(128,128),nn.PReLU(),
+                nn.Linear(128,num_outputs),
                 )
         self.value = nn.Sequential(
-                nn.Linear(self.lstm_size,256),nn.ReLU(),
-                nn.Linear(256,256),nn.ReLU(),
-                nn.Linear(256,1),
+                nn.Linear(self.lstm_size,128),nn.PReLU(),
+                nn.Linear(128,128),nn.PReLU(),
+                nn.Linear(128,1),
                 )
         self.iadvantage = nn.Sequential(
-                nn.Linear(self.lstm_size,256),nn.ReLU(),
-                nn.Linear(256,256),nn.ReLU(),
-                nn.Linear(256,num_outputs),
+                nn.Linear(self.lstm_size,128),nn.PReLU(),
+                nn.Linear(128,128),nn.PReLU(),
+                nn.Linear(128,num_outputs),
                 )
         self.ivalue = nn.Sequential(
-                nn.Linear(self.lstm_size,256),nn.ReLU(),
-                nn.Linear(256,256),nn.ReLU(),
-                nn.Linear(256,1),
+                nn.Linear(self.lstm_size,128),nn.PReLU(),
+                nn.Linear(128,128),nn.PReLU(),
+                nn.Linear(128,1),
                 )
         self.hx = None
         self.cx = None
@@ -340,23 +328,37 @@ class DQN(nn.Module):
 class RND(nn.Module):
     def __init__(self,num_inputs):
         super(RND,self).__init__()
-        self.target= nn.Sequential(
-                nn.Conv2d(num_inputs*2,64,8,stride=4),nn.ReLU(),
-                nn.Conv2d(64,64,4,stride=2),nn.ReLU(),
-                nn.Conv2d(64,64,3,stride=1),nn.ReLU(),
-                Flatten(),
-                nn.Linear(64*7*7,256),nn.ReLU(),
-                nn.Linear(256,256),
-                )
-        self.predictor = nn.Sequential(
-                nn.Conv2d(num_inputs*2,64,8,stride=4),nn.ReLU(),
-                nn.Conv2d(64,64,4,stride=2),nn.ReLU(),
-                nn.Conv2d(64,64,3,stride=1),nn.ReLU(),
-                Flatten(),
-                nn.Linear(64*7*7,256),nn.ReLU(),
-                nn.Linear(256,256),nn.ReLU(),
-                nn.Linear(256,256),
-                )
+        if cnn_enable:
+            size=7*7*64
+            self.target = nn.Sequential(
+                    nn.Conv2d(num_inputs,64,8,stride= 4),nn.PReLU(),
+                    nn.Conv2d(64,64,4,stride=2),nn.PReLU(),
+                    nn.Conv2d(64,64,3,stride=1),nn.PReLU(),
+                    Flatten(),
+                    nn.Linear(size,128),nn.PReLU(),
+                    nn.Linear(128,128),
+                    )
+            self.predictor = nn.Sequential(
+                    nn.Conv2d(num_inputs,64,8,stride= 4),nn.PReLU(),
+                    nn.Conv2d(64,64,4,stride=2),nn.PReLU(),
+                    nn.Conv2d(64,64,3,stride=1),nn.PReLU(),
+                    Flatten(),
+                    nn.Linear(size,128),nn.PReLU(),
+                    nn.Linear(128,128),nn.PReLU(),
+                    nn.Linear(128,128),
+                    )
+        else :
+            self.target = nn.Sequential(
+                    nn.Linear(s_dim,128),nn.PReLU(),
+                    nn.Linear(128,128),
+                    )
+            self.predictor = nn.Sequential(
+                    nn.Linear(s_dim,128),nn.PReLU(),
+                    nn.Linear(128,128),nn.PReLU(),
+                    nn.Linear(128,128),
+                    )
+            
+        
         for m in self.modules():
             if isinstance(m,nn.Linear):
                 nn.init.orthogonal_(m.weight,np.sqrt(2))
@@ -435,24 +437,18 @@ def actor_process(a_id,num_frames,shared_state,shared_queue,block=True, eps=0.1)
 
           
     mainQ = DQN(s_dim, a_dim, dev ).to(dev)
-#    targetQ = DQN(s_dim, a_dim, dev ).to(dev)
     rnd_model  = RND(s_dim).to(dev)
-    
     mainQ.load_state_dict(shared_state["mainQ"].state_dict())
-#    targetQ.load_state_dict(shared_state["targetQ"].state_dict())
      
     episode_reward=0
     local_mem = []
     epsilon = 1
-    state_mem = []
     done = True
     gamma = 0.997
     state = env.reset()
     q_val=[]
     for frame_idx in range(num_frames):
         if done:
-            
-            
             if len(local_mem)!=0:
                 with shared_state["vis"].get_lock():
                     vis.line(X=torch.tensor([frame_idx]), Y=torch.tensor([episode_reward]), win = win_r, update='append')
@@ -498,6 +494,14 @@ def actor_process(a_id,num_frames,shared_state,shared_queue,block=True, eps=0.1)
                     blocking = True if shared_queue.qsize()>max_shared_q_size and block else False
                     shared_queue.put([state.cpu() ,action,reward,gamma,ireward,igamma ],block=blocking)
                     
+                    
+                while True:
+                    with shared_state["wait"].get_lock():
+                        if shared_state["wait"].value > 0:
+                            shared_state["wait"].value -=1
+                            break
+                    time.sleep(0.01)
+                
                 if block == False:
                     return 0
         
@@ -505,13 +509,11 @@ def actor_process(a_id,num_frames,shared_state,shared_queue,block=True, eps=0.1)
             episode_reward=0
             gamma = 0.997
             local_mem = []
-            state_mem = []
             mainQ.reset_state()
 #            targetQ.reset_state()
             q_val = []
             
             
-    
         
     #    epsilon= 0.01**(EPS_CONST*frame_idx/num_frames)
         epsilon= eps
@@ -536,13 +538,12 @@ def actor_process(a_id,num_frames,shared_state,shared_queue,block=True, eps=0.1)
         state = next_state
         episode_reward += reward
     
-        
+    
         if shared_state["update"][a_id]:
             mainQ.load_state_dict(shared_state["mainQ"].state_dict())
-#            targetQ.load_state_dict(shared_state["targetQ"].state_dict())
             shared_state["update"][a_id]=False
             
-            print('actor_update',mainQ.value[0].weight[0][0:5])
+            print('actor_update',mainQ.value[0].weight[0][0:5].detach())
     
     
     print('done')
@@ -648,6 +649,10 @@ def learner_process(max_id,num_frames,shared_state,shared_queue,block=True):
                 vis.line(X=torch.tensor([frame_idx]),Y=torch.tensor([loss]),win=win_l0,update ='append')
                 vis.line(X=torch.tensor([frame_idx]),Y=torch.tensor([rnd_loss]),win=win_l1,update ='append')
             
+            with shared_state["wait"].get_lock():
+                shared_state["wait"].value +=1
+            
+                
             if frame_idx % 4 == 0:
     #        if random.random() < 1/10 :
                 soft_update(targetQ,mainQ,0.3)
@@ -670,7 +675,7 @@ if __name__ == '__main__':
     
     vis.close()
       
-    num_processes = 3
+    num_processes = 2
     
     shared_queue = mp.Queue()
     shared_state = dict()
@@ -679,8 +684,10 @@ if __name__ == '__main__':
     shared_state["targetQ"] =  DQN(s_dim, a_dim, dev ).share_memory()
     
     shared_state["update"] = mp.Array('i', [0 for i in range(num_processes)])
+#    shared_state["wait"] = mp.Array('i', [0 for i in range(num_processes)])
     shared_state["vis"] = mp.Value('i',0)
-    
+    shared_state["wait"] = mp.Value('i',0)
+    shared_state["wait"].value = start_frame//10
     
     
 #    for i in range(100):
