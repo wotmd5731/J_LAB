@@ -655,10 +655,10 @@ def actor_process(a_id,num_frames,shared_state,shared_queue,block=True, eps=0.1)
     env.close()
     
 
-    
-    
-def learner_process(max_id,num_frames,shared_state,shared_queue,block=True):
-    try:
+class learner_worker(mp.Process):
+    def __init__(self,max_id,num_frames,shared_state,shared_queue,block=True):
+        supder(learner_worker,self).__init__()
+
         win_ir = vis.line(Y=torch.tensor([0]),opts=dict(title='ireward'))
         win_l0 = vis.line(Y=torch.tensor([0]),opts=dict(title='loss'))
         win_l1 = vis.line(Y=torch.tensor([0]),opts=dict(title='rnd_loss'))
@@ -684,10 +684,54 @@ def learner_process(max_id,num_frames,shared_state,shared_queue,block=True):
         
         
         replay_buffer = ReplayBuffer(mem_size,models,shared_state)
-        def soft_update(target_model, model, tau):
-            for target_param, param in zip(target_model.parameters(), model.parameters()):
-                target_param.data.copy_(target_param.data * (1.0 - tau) + param.data * tau)
-        def update():
+
+
+    def soft_update(target_model, model, tau):
+        for target_param, param in zip(target_model.parameters(), model.parameters()):
+            target_param.data.copy_(target_param.data * (1.0 - tau) + param.data * tau)
+
+    def run(self):
+
+
+        while len(replay_buffer) < start_frame and block:
+            
+            data = shared_queue.get(block=True)
+            replay_buffer.push(data)
+            print(repr(replay_buffer),end='\r')
+        
+        
+        for frame_idx in range(num_frames):
+            print(repr(replay_buffer),end='\r')
+            if shared_queue.qsize()!=0:
+#            while shared_queue.qsize() != 0:
+                data = shared_queue.get()
+                replay_buffer.push(data)
+    
+            loss, a_loss = update()
+            print(f'#learner  l:{loss:.5f}')
+            with shared_state["vis"].get_lock():
+                vis.line(X=torch.tensor([frame_idx]),Y=torch.tensor([loss]),win=win_l0,update ='append')
+                vis.line(X=torch.tensor([frame_idx]),Y=torch.tensor([a_loss]),win=win_l1,update ='append')
+            
+            with shared_state["wait"].get_lock():
+                shared_state["wait"].value +=3
+            
+                
+            if frame_idx % 4 == 0:
+    #        if random.random() < 1/10 :
+                soft_update(models[1],models[0],0.3)
+                soft_update(models[3],models[2],0.3)
+                
+#                update_target(targetQ,mainQ)
+            if frame_idx % 3 == 0:
+    #        if random.random() < 1/20 :
+                shared_state["actor"].load_state_dict(models[0].state_dict())
+                shared_state["critic"].load_state_dict(models[2].state_dict())
+                for i in range(max_id):
+                    shared_state["update"][i]=True
+            if block == False:
+                return 0
+    def update(self):
             epi_idx,seq_idx,state, action, reward,gamma,ireward,igamma,hxcx, burn_state = replay_buffer.sample(batch_size)
             aloss = []
             burned_state = []
@@ -710,11 +754,6 @@ def learner_process(max_id,num_frames,shared_state,shared_queue,block=True):
                     model_state = [models[i].get_state() for i in range(4)]
                     burned_state.append( torch.stack(model_state,0) )
                     
-                
-#                mhx = torch.cat(burned_hx,0).to(dev)
-#                mcx = torch.cat(burned_cx,0).to(dev)
-#                thx = torch.cat(burned_thx,0).to(dev)
-#                tcx = torch.cat(burned_tcx,0).to(dev)
                 
             burned_state = torch.cat (burned_state,2)
             
@@ -764,46 +803,14 @@ def learner_process(max_id,num_frames,shared_state,shared_queue,block=True):
                 return 0
             data = shared_queue.get(block=True)
             replay_buffer.push(data)
-            
         
-        while len(replay_buffer) < start_frame and block:
-            
-            data = shared_queue.get(block=True)
-            replay_buffer.push(data)
-            print(repr(replay_buffer),end='\r')
-        
-        
-        for frame_idx in range(num_frames):
-            print(repr(replay_buffer),end='\r')
-            if shared_queue.qsize()!=0:
-#            while shared_queue.qsize() != 0:
-                data = shared_queue.get()
-                replay_buffer.push(data)
+
+        pass
+
     
-            loss, a_loss = update()
-            print(f'#learner  l:{loss:.5f}')
-            with shared_state["vis"].get_lock():
-                vis.line(X=torch.tensor([frame_idx]),Y=torch.tensor([loss]),win=win_l0,update ='append')
-                vis.line(X=torch.tensor([frame_idx]),Y=torch.tensor([a_loss]),win=win_l1,update ='append')
-            
-            with shared_state["wait"].get_lock():
-                shared_state["wait"].value +=3
-            
-                
-            if frame_idx % 4 == 0:
-    #        if random.random() < 1/10 :
-                soft_update(models[1],models[0],0.3)
-                soft_update(models[3],models[2],0.3)
-                
-#                update_target(targetQ,mainQ)
-            if frame_idx % 3 == 0:
-    #        if random.random() < 1/20 :
-                shared_state["actor"].load_state_dict(models[0].state_dict())
-                shared_state["critic"].load_state_dict(models[2].state_dict())
-                for i in range(max_id):
-                    shared_state["update"][i]=True
-            if block == False:
-                return 0
+def learner_process():
+    try:
+        
     except Exception as e:        
         print(e)
         
