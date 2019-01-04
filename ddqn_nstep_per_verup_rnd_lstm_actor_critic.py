@@ -451,6 +451,70 @@ class RND(nn.Module):
 def update_target(tar,cur):
     tar.load_state_dict(cur.state_dict())
 
+def calc_td(models,state, action, reward,gamma,ireward,igamma,model_state , story_len, stored_state =False): 
+    y_t_hat = []
+    iy_t_hat = []
+    state_mem = []
+    losses = []
+#    with torch.no_grad():
+    
+    
+    
+    if stored_state:
+        models[0].set_state(model_state[0])
+        models[1].set_state(model_state[1])
+        models[2].set_state(model_state[2])
+        models[3].set_state(model_state[3])
+        state_mem.append([models[i].get_state() for i in range(4)])
+        for i in range(story_len):
+            _,_ = models[0](state[i])
+            _,_ = models[1](state[i])
+            _,_,_,_ = models[2](state[i])
+            _,_,_,_ = models[3](state[i])
+            state_mem.append([models[i].get_state() for i in range(4)])
+    
+
+    models[0].set_state(model_state[0])
+    models[1].set_state(model_state[1])
+    models[2].set_state(model_state[2])
+    models[3].set_state(model_state[3])
+        
+    for i in range(n_step):
+        _,_ = models[1](state[i])
+        _,_,_,_ = models[3](state[i])
+        
+        
+#        if stored_state:
+#            state_mem.append([models[i].get_state() for i in range(4)])
+            
+    for i in range(story_len):
+        act,_ = models[0](state[i])
+        tact,_ = models[1](state[i+n_step])
+        qv,_,iqv,_ = models[2](state[i])
+        tqv,_,tiqv,_ = models[3](state[i+n_step])
+        y_t_hat = reward[i] + (gamma[i+n_step]**n_step)*tqv.gather(1,tact.view(-1,1))
+        losses.append ( qv.gather(1,action[i]) - y_t_hat.detach())
+        
+        
+#        if stored_state:
+#            state_mem.append([models[i].get_state() for i in range(4)])
+                
+            
+#            y_t_hat.append()
+#            iy_t_hat.append(ireward[i] + (igamma[i+n_step]**n_step)*iqv.gather(1,tact.view(-1,1)))
+    
+#    losses=[]
+#    
+#    [models[i].reset_state() for i in range(4)]
+#    [models[i].set_state(model_state[i]) for i in range(4)]
+#    
+#    for i in range(story_len):
+#        q,_,iq,_ = main_model(state[i])
+#        td = q.gather(1,action[i]) - y_t_hat[i]
+#        itd = iq.gather(1,action[i]) - iy_t_hat[i]
+#        losses.append(td+itd)
+    
+    return torch.cat(losses,1).abs(), state_mem
 
         
 
@@ -637,70 +701,6 @@ class learner_worker(mp.Process):
         
         self.replay_buffer = ReplayBuffer(mem_size,self.models,self.shared_state)
 
-    def calc_td(models,state, action, reward,gamma,ireward,igamma,model_state , story_len, stored_state =False): 
-        y_t_hat = []
-        iy_t_hat = []
-        state_mem = []
-        losses = []
-    #    with torch.no_grad():
-        
-        
-        
-        if stored_state:
-            models[0].set_state(model_state[0])
-            models[1].set_state(model_state[1])
-            models[2].set_state(model_state[2])
-            models[3].set_state(model_state[3])
-            state_mem.append([models[i].get_state() for i in range(4)])
-            for i in range(story_len):
-                _,_ = models[0](state[i])
-                _,_ = models[1](state[i])
-                _,_,_,_ = models[2](state[i])
-                _,_,_,_ = models[3](state[i])
-                state_mem.append([models[i].get_state() for i in range(4)])
-        
-
-        models[0].set_state(model_state[0])
-        models[1].set_state(model_state[1])
-        models[2].set_state(model_state[2])
-        models[3].set_state(model_state[3])
-            
-        for i in range(n_step):
-            _,_ = models[1](state[i])
-            _,_,_,_ = models[3](state[i])
-            
-            
-    #        if stored_state:
-    #            state_mem.append([models[i].get_state() for i in range(4)])
-                
-        for i in range(story_len):
-            act,_ = models[0](state[i])
-            tact,_ = models[1](state[i+n_step])
-            qv,_,iqv,_ = models[2](state[i])
-            tqv,_,tiqv,_ = models[3](state[i+n_step])
-            y_t_hat = reward[i] + (gamma[i+n_step]**n_step)*tqv.gather(1,tact.view(-1,1))
-            losses.append ( qv.gather(1,action[i]) - y_t_hat.detach())
-            
-            
-    #        if stored_state:
-    #            state_mem.append([models[i].get_state() for i in range(4)])
-                    
-                
-    #            y_t_hat.append()
-    #            iy_t_hat.append(ireward[i] + (igamma[i+n_step]**n_step)*iqv.gather(1,tact.view(-1,1)))
-        
-    #    losses=[]
-    #    
-    #    [models[i].reset_state() for i in range(4)]
-    #    [models[i].set_state(model_state[i]) for i in range(4)]
-    #    
-    #    for i in range(story_len):
-    #        q,_,iq,_ = main_model(state[i])
-    #        td = q.gather(1,action[i]) - y_t_hat[i]
-    #        itd = iq.gather(1,action[i]) - iy_t_hat[i]
-    #        losses.append(td+itd)
-        
-        return torch.cat(losses,1).abs(), state_mem
 
     def soft_update(target_model, model, tau):
         for target_param, param in zip(target_model.parameters(), model.parameters()):
