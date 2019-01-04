@@ -660,6 +660,10 @@ class learner_worker(mp.Process):
         super(learner_worker,self).__init__()
         self.shared_state = shared_state
         self.shared_queue = shared_queue
+        self.max_id = max_id
+        self.num_frames = num_frames
+        self.block = block
+
         self.win_ir = vis.line(Y=torch.tensor([0]),opts=dict(title='ireward'))
         self.win_l0 = vis.line(Y=torch.tensor([0]),opts=dict(title='loss'))
         self.win_l1 = vis.line(Y=torch.tensor([0]),opts=dict(title='rnd_loss'))
@@ -672,19 +676,19 @@ class learner_worker(mp.Process):
         
         self.rnd_model  = RND(s_dim).to(dev)
         
-        self.actor.load_state_dict(shared_state["actor"].state_dict())
-        self.Tactor.load_state_dict(shared_state["actor"].state_dict())
-        self.critic.load_state_dict(shared_state["critic"].state_dict())
-        self.Tcritic.load_state_dict(shared_state["critic"].state_dict())
+        self.actor.load_state_dict(self.shared_state["actor"].state_dict())
+        self.Tactor.load_state_dict(self.shared_state["actor"].state_dict())
+        self.critic.load_state_dict(self.shared_state["critic"].state_dict())
+        self.Tcritic.load_state_dict(self.shared_state["critic"].state_dict())
     
-        self.models=[actor,Tactor, critic,Tcritic]
+        self.models=[self.actor,self.Tactor, self.critic,self.Tcritic]
         
-        self.Act_optimizer = optim.Adam(actor.parameters(),a_lr)
-        self.Cri_optimizer = optim.Adam(critic.parameters(),c_lr)
-        self.rnd_optimizer = optim.Adam(rnd_model.parameters(),rnd_lr)
+        self.Act_optimizer = optim.Adam(self.actor.parameters(),a_lr)
+        self.Cri_optimizer = optim.Adam(self.critic.parameters(),c_lr)
+        self.rnd_optimizer = optim.Adam(self.rnd_model.parameters(),rnd_lr)
         
         
-        self.replay_buffer = ReplayBuffer(mem_size,models,shared_state)
+        self.replay_buffer = ReplayBuffer(mem_size,self.models,self.shared_state)
 
 
     def soft_update(target_model, model, tau):
@@ -733,57 +737,57 @@ class learner_worker(mp.Process):
             if self.block == False:
                 return 0
     def update(self):
-            epi_idx,seq_idx,state, action, reward,gamma,ireward,igamma,hxcx, burn_state = self.replay_buffer.sample(batch_size)
-            aloss = []
-            burned_state = []
-#            [models[i].reset_state() for i in range(4)]
-#            model_state = [self.models[i].get_state() for i in range(4)]
-            
-            
-            with torch.no_grad():
-                for i in range(self.batch_size):
-                    [self.models[i].reset_state() for i in range(4)]
-                    
-                    [self.models[j].set_state(hxcx[i][2*j:2*j+2]) for j in range(4)]
-                            
-                    
-                    for j in range(len(burn_state[i])):
-                        _,_ = self.models[0](burn_state[i][j])
-                        _,_ = self.models[1](burn_state[i][j])
-                        _,_,_,_ = self.models[2](burn_state[i][j])
-                        _,_,_,_ = self.models[3](burn_state[i][j])
-                    model_state = [self.models[i].get_state() for i in range(4)]
-                    burned_state.append( torch.stack(model_state,0) )
-                    
-                
-            burned_state = torch.cat (burned_state,2)
-            
-            loss,_ = self.calc_td(self.models,state, action, reward,gamma,ireward,igamma,burned_state,seq_len) 
-            self.Cri_optimizer.zero_grad()
-            loss.pow(2).mean().backward()
-            self.Cri_optimizer.step()
-            
-            
-            
-            
-            
-            
-            [self.models[i].reset_state() for i in range(4)]
-            self.models[0].set_state(burned_state[0])
-            self.models[1].set_state(burned_state[1])
-            self.models[2].set_state(burned_state[2])
-            self.models[3].set_state(burned_state[3])
+        epi_idx,seq_idx,state, action, reward,gamma,ireward,igamma,hxcx, burn_state = self.replay_buffer.sample(batch_size)
+                aloss = []
+        burned_state = []
+#        [models[i].reset_state() for i in range(4)]
+#        model_state = [self.models[i].get_state() for i in range(4)]
         
+        
+        with torch.no_grad():
+            for i in range(self.batch_size):
+                [self.models[i].reset_state() for i in range(4)]
+                
+                [self.models[j].set_state(hxcx[i][2*j:2*j+2]) for j in range(4)]
+                        
+                
+                for j in range(len(burn_state[i])):
+                    _,_ = self.models[0](burn_state[i][j])
+                    _,_ = self.models[1](burn_state[i][j])
+                    _,_,_,_ = self.models[2](burn_state[i][j])
+                    _,_,_,_ = self.models[3](burn_state[i][j])
+                model_state = [self.models[i].get_state() for i in range(4)]
+                burned_state.append( torch.stack(model_state,0) )
+                
             
-            for i in range(self.seq_len):
-                act,_ = self.models[0](state[i])
-                qv,_,iqv,_ = self.models[2](state[i])
-                aloss.append( qv.gather(1,act.view(-1,1)) )
-            aloss = torch.cat(aloss,1)
-            self.Act_optimizer.zero_grad()
-            aloss.mean().backward()
-            self.Act_optimizer.step()
-            
+        burned_state = torch.cat (burned_state,2)
+        
+        loss,_ = self.calc_td(self.models,state, action, reward,gamma,ireward,igamma,burned_state,seq_len) 
+        self.Cri_optimizer.zero_grad()
+        loss.pow(2).mean().backward()
+        self.Cri_optimizer.step()
+        
+        
+        
+        
+        
+        
+        [self.models[i].reset_state() for i in range(4)]
+        self.models[0].set_state(burned_state[0])
+        self.models[1].set_state(burned_state[1])
+        self.models[2].set_state(burned_state[2])
+        self.models[3].set_state(burned_state[3])
+        
+        
+        for i in range(self.seq_len):
+            act,_ = self.models[0](state[i])
+            qv,_,iqv,_ = self.models[2](state[i])
+            aloss.append( qv.gather(1,act.view(-1,1)) )
+        aloss = torch.cat(aloss,1)
+        self.Act_optimizer.zero_grad()
+        aloss.mean().backward()
+        self.Act_optimizer.step()
+        
 
             
         #            pm,tm = rnd_model(state,nstate)
@@ -792,10 +796,10 @@ class learner_worker(mp.Process):
         #            rnd_loss.backward()
         #            rnd_optimizer.step()
             
-            for i in range(len(epi_idx)):
-                self.replay_buffer.priority_update(epi_idx[i],seq_idx[i],loss[i].detach())
-            
-            return loss.pow(2).mean().item(),aloss.mean()
+        for i in range(len(epi_idx)):
+            self.replay_buffer.priority_update(epi_idx[i],seq_idx[i],loss[i].detach())
+        
+        return loss.pow(2).mean().item(),aloss.mean()
         
 #    #    if len(replay_buffer)==0:
 #        if block==False:
