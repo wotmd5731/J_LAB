@@ -95,7 +95,6 @@ state_shape = (1,1,s_dim)
 
 
 
-env = env_cover(env_id)
 
 
 use_cuda = False
@@ -453,70 +452,6 @@ def update_target(tar,cur):
     tar.load_state_dict(cur.state_dict())
 
 
-def calc_td(models,state, action, reward,gamma,ireward,igamma,model_state , story_len, stored_state =False): 
-    y_t_hat = []
-    iy_t_hat = []
-    state_mem = []
-    losses = []
-#    with torch.no_grad():
-    
-    
-    
-    if stored_state:
-        models[0].set_state(model_state[0])
-        models[1].set_state(model_state[1])
-        models[2].set_state(model_state[2])
-        models[3].set_state(model_state[3])
-        state_mem.append([models[i].get_state() for i in range(4)])
-        for i in range(story_len):
-            _,_ = models[0](state[i])
-            _,_ = models[1](state[i])
-            _,_,_,_ = models[2](state[i])
-            _,_,_,_ = models[3](state[i])
-            state_mem.append([models[i].get_state() for i in range(4)])
-    
-
-    models[0].set_state(model_state[0])
-    models[1].set_state(model_state[1])
-    models[2].set_state(model_state[2])
-    models[3].set_state(model_state[3])
-        
-    for i in range(n_step):
-        _,_ = models[1](state[i])
-        _,_,_,_ = models[3](state[i])
-        
-        
-#        if stored_state:
-#            state_mem.append([models[i].get_state() for i in range(4)])
-            
-    for i in range(story_len):
-        act,_ = models[0](state[i])
-        tact,_ = models[1](state[i+n_step])
-        qv,_,iqv,_ = models[2](state[i])
-        tqv,_,tiqv,_ = models[3](state[i+n_step])
-        y_t_hat = reward[i] + (gamma[i+n_step]**n_step)*tqv.gather(1,tact.view(-1,1))
-        losses.append ( qv.gather(1,action[i]) - y_t_hat.detach())
-        
-        
-#        if stored_state:
-#            state_mem.append([models[i].get_state() for i in range(4)])
-                
-            
-#            y_t_hat.append()
-#            iy_t_hat.append(ireward[i] + (igamma[i+n_step]**n_step)*iqv.gather(1,tact.view(-1,1)))
-    
-#    losses=[]
-#    
-#    [models[i].reset_state() for i in range(4)]
-#    [models[i].set_state(model_state[i]) for i in range(4)]
-#    
-#    for i in range(story_len):
-#        q,_,iq,_ = main_model(state[i])
-#        td = q.gather(1,action[i]) - y_t_hat[i]
-#        itd = iq.gather(1,action[i]) - iy_t_hat[i]
-#        losses.append(td+itd)
-    
-    return torch.cat(losses,1).abs(), state_mem
         
 
 
@@ -526,7 +461,10 @@ class actor_worker(mp.Process):
         self.shared_state = shared_state
         self.shared_queue = shared_queue
         self.block = block
-
+        self.num_frames = num_frames
+        self.a_id = a_id
+        
+        self.env = env_cover(env_id)
         print(f'#{a_id} start')
         self.win_epsil = vis.line(Y=torch.tensor([0]),opts=dict(title='epsilon'+str(a_id)))
         self.win_r = vis.line(Y=torch.tensor([0]),opts=dict(title='reward'+str(a_id)))
@@ -549,17 +487,17 @@ class actor_worker(mp.Process):
         epsilon = 1
         done = True
         gamma = 0.997
-        state = env.reset()
+        state = self.env.reset()
         q_val=[]
         a_val=[]
         qa_val=[]
-        for frame_idx in range(num_frames):
+        for frame_idx in range(self.num_frames):
             if done:
                 if len(local_mem)!=0:
-                    with shared_state["vis"].get_lock():
-                        vis.line(X=torch.tensor([frame_idx]), Y=torch.tensor([episode_reward]), win = win_r, update='append')
+                    with self.shared_state["vis"].get_lock():
+                        vis.line(X=torch.tensor([frame_idx]), Y=torch.tensor([episode_reward]), win = self.win_r, update='append')
         #                vis.line(X=torch.tensor([frame_idx]), Y=torch.tensor([epsilon]), win = win_epsil, update='append')
-                        vis.line(Y=torch.cat(q_val,0), win= win_exp_q, opts=dict(title='exp_q'+str(a_id)))            
+                        vis.line(Y=torch.cat(q_val,0), win= self.win_exp_q, opts=dict(title='exp_q'+str(a_id)))            
                     for i in range(n_step):
                         local_mem.append([torch.zeros(state.size()).to(dev),0,0,0,0,0])
                         
@@ -583,8 +521,8 @@ class actor_worker(mp.Process):
         #                ll.append(local_mem[i][4])
         #            win_ir = vis.line(Y=torch.tensor(ll),win= win_ir)
                     with torch.no_grad():
-                        actor.reset_state()
-                        critic.reset_state()
+                        self.actor.reset_state()
+                        self.critic.reset_state()
     #                    targetQ.reset_state()
     #                    mhx,mcx= actor.get_state()
     #                    thx,tcx= targetQ.get_state()
@@ -598,30 +536,30 @@ class actor_worker(mp.Process):
                         ireward = torch.Tensor(ireward).reshape((b_len,1,1))
                         igamma = torch.Tensor(igamma).reshape((b_len,1,1))
                         
-                        blocking = True if shared_queue.qsize()>max_shared_q_size and block else False
-                        shared_queue.put([state.cpu() ,action,reward,gamma,ireward,igamma ],block=blocking)
+                        blocking = True if self.shared_queue.qsize()>max_shared_q_size and self.block else False
+                        self.shared_queue.put([state.cpu() ,action,reward,gamma,ireward,igamma ],block=blocking)
                         
                         
                     
                     
-                    if block == False:
+                    if self.block == False:
                         return 0
             
-                state = env.reset()
+                state = self.env.reset()
                 episode_reward=0
                 gamma = 0.997
                 local_mem = []
-                actor.reset_state()
-                critic.reset_state()
+                self.actor.reset_state()
+                self.critic.reset_state()
     #            targetQ.reset_state()
                 q_val = []
                 a_val = []
                 qa_val = []
                 
             while True:
-                with shared_state["wait"].get_lock():
-                    if shared_state["wait"].value > 0:
-                        shared_state["wait"].value -=1
+                with self.shared_state["wait"].get_lock():
+                    if self.shared_state["wait"].value > 0:
+                        self.shared_state["wait"].value -=1
                         break
                 time.sleep(0.01)
                         
@@ -633,8 +571,8 @@ class actor_worker(mp.Process):
     #            thx,tcx = targetQ.get_state()
     #            state_mem.append([mhx,mcx,thx,tcx])
     #            state_mem.append([mhx,mcx])
-                act, act_prob = actor(state)
-                Q,_,_,_ = critic(state)
+                act, act_prob = self.actor(state)
+                Q,_,_,_ = self.critic(state)
     #            _,_,_,_ = targetQ(state)
                 
             action = act.item() if random.random() > epsilon else random.randrange(a_dim)
@@ -645,23 +583,23 @@ class actor_worker(mp.Process):
     #        if vis_render:
     #            vis.image(state.view(84,84),win = win_img)
                 
-            next_state , reward, done ,_ = env.step(action)
+            next_state , reward, done ,_ = self.env.step(action)
             local_mem.append([state, action ,reward, gamma, 0 , 0])
             
             state = next_state
             episode_reward += reward
         
         
-            if shared_state["update"][a_id]:
-                actor.load_state_dict(shared_state["actor"].state_dict())
-                critic.load_state_dict(shared_state["critic"].state_dict())
-                shared_state["update"][a_id]=False
+            if self.shared_state["update"][self.a_id]:
+                self.actor.load_state_dict(self.shared_state["actor"].state_dict())
+                self.critic.load_state_dict(self.shared_state["critic"].state_dict())
+                self.shared_state["update"][self.a_id]=False
                 
                 print('actor_update',action.value[0].weight[0][0:5].detach())
         
         
         print('done')
-        env.close()
+        self.env.close()
     
 
 class learner_worker(mp.Process):
@@ -699,6 +637,70 @@ class learner_worker(mp.Process):
         
         self.replay_buffer = ReplayBuffer(mem_size,self.models,self.shared_state)
 
+    def calc_td(models,state, action, reward,gamma,ireward,igamma,model_state , story_len, stored_state =False): 
+        y_t_hat = []
+        iy_t_hat = []
+        state_mem = []
+        losses = []
+    #    with torch.no_grad():
+        
+        
+        
+        if stored_state:
+            models[0].set_state(model_state[0])
+            models[1].set_state(model_state[1])
+            models[2].set_state(model_state[2])
+            models[3].set_state(model_state[3])
+            state_mem.append([models[i].get_state() for i in range(4)])
+            for i in range(story_len):
+                _,_ = models[0](state[i])
+                _,_ = models[1](state[i])
+                _,_,_,_ = models[2](state[i])
+                _,_,_,_ = models[3](state[i])
+                state_mem.append([models[i].get_state() for i in range(4)])
+        
+
+        models[0].set_state(model_state[0])
+        models[1].set_state(model_state[1])
+        models[2].set_state(model_state[2])
+        models[3].set_state(model_state[3])
+            
+        for i in range(n_step):
+            _,_ = models[1](state[i])
+            _,_,_,_ = models[3](state[i])
+            
+            
+    #        if stored_state:
+    #            state_mem.append([models[i].get_state() for i in range(4)])
+                
+        for i in range(story_len):
+            act,_ = models[0](state[i])
+            tact,_ = models[1](state[i+n_step])
+            qv,_,iqv,_ = models[2](state[i])
+            tqv,_,tiqv,_ = models[3](state[i+n_step])
+            y_t_hat = reward[i] + (gamma[i+n_step]**n_step)*tqv.gather(1,tact.view(-1,1))
+            losses.append ( qv.gather(1,action[i]) - y_t_hat.detach())
+            
+            
+    #        if stored_state:
+    #            state_mem.append([models[i].get_state() for i in range(4)])
+                    
+                
+    #            y_t_hat.append()
+    #            iy_t_hat.append(ireward[i] + (igamma[i+n_step]**n_step)*iqv.gather(1,tact.view(-1,1)))
+        
+    #    losses=[]
+    #    
+    #    [models[i].reset_state() for i in range(4)]
+    #    [models[i].set_state(model_state[i]) for i in range(4)]
+    #    
+    #    for i in range(story_len):
+    #        q,_,iq,_ = main_model(state[i])
+    #        td = q.gather(1,action[i]) - y_t_hat[i]
+    #        itd = iq.gather(1,action[i]) - iy_t_hat[i]
+    #        losses.append(td+itd)
+        
+        return torch.cat(losses,1).abs(), state_mem
 
     def soft_update(target_model, model, tau):
         for target_param, param in zip(target_model.parameters(), model.parameters()):
