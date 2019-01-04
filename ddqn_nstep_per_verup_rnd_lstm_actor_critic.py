@@ -520,14 +520,14 @@ def calc_td(models,state, action, reward,gamma,ireward,igamma,model_state , stor
 
 
 class actor_worker(mp.Process):
-    def __init__(a_id,num_frames,shared_state,shared_queue,block=True, eps=0.1):
+    def __init__(self.a_id,num_frames,shared_state,shared_queue, eps=0.1,block=True):
         super(actor_worker,self).__init__()
         self.shared_state = shared_state
         self.shared_queue = shared_queue
         self.block = block
         self.num_frames = num_frames
         self.a_id = a_id
-        
+        self.eps = eps 
         self.env = env_cover(env_id)
         print(f'#{a_id} start')
         self.win_epsil = vis.line(Y=torch.tensor([0]),opts=dict(title='epsilon'+str(a_id)))
@@ -561,7 +561,7 @@ class actor_worker(mp.Process):
                     with self.shared_state["vis"].get_lock():
                         vis.line(X=torch.tensor([frame_idx]), Y=torch.tensor([episode_reward]), win = self.win_r, update='append')
         #                vis.line(X=torch.tensor([frame_idx]), Y=torch.tensor([epsilon]), win = win_epsil, update='append')
-                        vis.line(Y=torch.cat(q_val,0), win= self.win_exp_q, opts=dict(title='exp_q'+str(a_id)))            
+                        vis.line(Y=torch.cat(q_val,0), win= self.win_exp_q, opts=dict(title='exp_q'+str(self.a_id)))            
                     for i in range(n_step):
                         local_mem.append([torch.zeros(state.size()).to(dev),0,0,0,0,0])
                         
@@ -628,7 +628,7 @@ class actor_worker(mp.Process):
                 time.sleep(0.01)
                         
         #    epsilon= 0.01**(EPS_CONST*frame_idx/num_frames)
-            epsilon= eps
+        #    epsilon= eps
             
             with torch.no_grad():
     #            mhx,mcx = actor.get_state()
@@ -639,7 +639,7 @@ class actor_worker(mp.Process):
                 Q,_,_,_ = self.critic(state)
     #            _,_,_,_ = targetQ(state)
                 
-            action = act.item() if random.random() > epsilon else random.randrange(a_dim)
+            action = act.item() if random.random() > self.eps else random.randrange(a_dim)
             a_val.append(act_prob.detach())
             
             q_val.append(Q.detach())
@@ -709,7 +709,7 @@ class learner_worker(mp.Process):
     def run(self):
 
 
-        while len(self.replay_buffer) < self.start_frame and self.block:
+        while len(self.replay_buffer) < start_frame and self.block:
             
             data = self.shared_queue.get(block=True)
             self.replay_buffer.push(data)
@@ -749,14 +749,14 @@ class learner_worker(mp.Process):
                 return 0
     def update(self):
         epi_idx,seq_idx,state, action, reward,gamma,ireward,igamma,hxcx, burn_state = self.replay_buffer.sample(batch_size)
-                aloss = []
+        aloss = []
         burned_state = []
 #        [models[i].reset_state() for i in range(4)]
 #        model_state = [self.models[i].get_state() for i in range(4)]
         
         
         with torch.no_grad():
-            for i in range(self.batch_size):
+            for i in range(batch_size):
                 [self.models[i].reset_state() for i in range(4)]
                 
                 [self.models[j].set_state(hxcx[i][2*j:2*j+2]) for j in range(4)]
@@ -773,7 +773,7 @@ class learner_worker(mp.Process):
             
         burned_state = torch.cat (burned_state,2)
         
-        loss,_ = self.calc_td(self.models,state, action, reward,gamma,ireward,igamma,burned_state,seq_len) 
+        loss,_ = calc_td(self.models,state, action, reward,gamma,ireward,igamma,burned_state,seq_len) 
         self.Cri_optimizer.zero_grad()
         loss.pow(2).mean().backward()
         self.Cri_optimizer.step()
@@ -790,7 +790,7 @@ class learner_worker(mp.Process):
         self.models[3].set_state(burned_state[3])
         
         
-        for i in range(self.seq_len):
+        for i in range(seq_len):
             act,_ = self.models[0](state[i])
             qv,_,iqv,_ = self.models[2](state[i])
             aloss.append( qv.gather(1,act.view(-1,1)) )
