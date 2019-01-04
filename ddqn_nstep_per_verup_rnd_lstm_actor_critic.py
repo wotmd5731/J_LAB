@@ -520,139 +520,148 @@ def calc_td(models,state, action, reward,gamma,ireward,igamma,model_state , stor
         
 
 
+class actor_worker(mp.Process):
+    def __init__(a_id,num_frames,shared_state,shared_queue,block=True, eps=0.1):
+        super(actor_worker,self).__init__()
+        self.shared_state = shared_state
+        self.shared_queue = shared_queue
+        self.block = block
+
+        print(f'#{a_id} start')
+        self.win_epsil = vis.line(Y=torch.tensor([0]),opts=dict(title='epsilon'+str(a_id)))
+        self.win_r = vis.line(Y=torch.tensor([0]),opts=dict(title='reward'+str(a_id)))
+        self.win_exp_q = vis.line(Y=torch.tensor([0]),opts=dict(title='exp_q'+str(a_id)))
+
+              
+        self.actor = Actor(s_dim, a_dim, dev ).to(dev)
+        self.critic = Critic(s_dim, a_dim, dev ).to(dev)
+        self.rnd_model  = RND(s_dim).to(dev)
+        self.actor.load_state_dict(self.shared_state["actor"].state_dict())
+        self.critic.load_state_dict(self.shared_state["critic"].state_dict())
 
 
-def actor_process(a_id,num_frames,shared_state,shared_queue,block=True, eps=0.1):
-    print(f'#{a_id} start')
-    win_epsil = vis.line(Y=torch.tensor([0]),opts=dict(title='epsilon'+str(a_id)))
-    win_r = vis.line(Y=torch.tensor([0]),opts=dict(title='reward'+str(a_id)))
-    win_exp_q = vis.line(Y=torch.tensor([0]),opts=dict(title='exp_q'+str(a_id)))
 
-          
-    actor = Actor(s_dim, a_dim, dev ).to(dev)
-    critic = Critic(s_dim, a_dim, dev ).to(dev)
-    rnd_model  = RND(s_dim).to(dev)
-    actor.load_state_dict(shared_state["actor"].state_dict())
-    critic.load_state_dict(shared_state["critic"].state_dict())
-     
-    episode_reward=0
-    local_mem = []
-    epsilon = 1
-    done = True
-    gamma = 0.997
-    state = env.reset()
-    q_val=[]
-    a_val=[]
-    qa_val=[]
-    for frame_idx in range(num_frames):
-        if done:
-            if len(local_mem)!=0:
-                with shared_state["vis"].get_lock():
-                    vis.line(X=torch.tensor([frame_idx]), Y=torch.tensor([episode_reward]), win = win_r, update='append')
-    #                vis.line(X=torch.tensor([frame_idx]), Y=torch.tensor([epsilon]), win = win_epsil, update='append')
-                    vis.line(Y=torch.cat(q_val,0), win= win_exp_q, opts=dict(title='exp_q'+str(a_id)))            
-                for i in range(n_step):
-                    local_mem.append([torch.zeros(state.size()).to(dev),0,0,0,0,0])
-                    
-    #            for i in range(len(local_mem)-n_step):
-    #                local_mem[i][5] = 0.99 if local_mem[i][3]!=0 else 0 
-    #                state = local_mem[i][0]
-    #                next_state = local_mem[i+n_step][0]
-    #                
-    ##                state = torch.cat([local_mem[j if j>=0 else  0][0] for j in range(i-frame_stack+1,i+1)],1)
-    ##                next_state = torch.cat([local_mem[j if j>=0 else  0][0] for j in range(i-frame_stack+1+n_step,i+1+n_step)],1)
-    #                pred , targ = rnd_model(state.to(dev),next_state.to(dev))
-    #                i_reward = ((pred-targ)**2).mean().item()
-    #                local_mem[i][4] = i_reward
-        
-                for i in range(len(local_mem)-n_step):
-                    local_mem[i][2] = sum([local_mem[i+j][2] *(local_mem[i+j][3]**j) for j in range(n_step)])
-    #                local_mem[i][4] = sum([local_mem[i+j][4] *(0.99**j) for j in range(n_step)])
-        
-    #            ll = []
-    #            for i in range(len(local_mem)-n_step):
-    #                ll.append(local_mem[i][4])
-    #            win_ir = vis.line(Y=torch.tensor(ll),win= win_ir)
-                with torch.no_grad():
-                    actor.reset_state()
-                    critic.reset_state()
-#                    targetQ.reset_state()
-#                    mhx,mcx= actor.get_state()
-#                    thx,tcx= targetQ.get_state()
-                    state,action,reward,gamma,ireward,igamma = zip(*local_mem)
-        
-                    b_len = len(local_mem)
-                    state = torch.stack(state)
-                    action = torch.LongTensor(action).reshape((b_len,1,1))
-                    reward = torch.Tensor(reward).reshape((b_len,1,1))
-                    gamma = torch.Tensor(gamma).reshape((b_len,1,1))
-                    ireward = torch.Tensor(ireward).reshape((b_len,1,1))
-                    igamma = torch.Tensor(igamma).reshape((b_len,1,1))
-                    
-                    blocking = True if shared_queue.qsize()>max_shared_q_size and block else False
-                    shared_queue.put([state.cpu() ,action,reward,gamma,ireward,igamma ],block=blocking)
+
+    def run(self):
+
+        episode_reward=0
+        local_mem = []
+        epsilon = 1
+        done = True
+        gamma = 0.997
+        state = env.reset()
+        q_val=[]
+        a_val=[]
+        qa_val=[]
+        for frame_idx in range(num_frames):
+            if done:
+                if len(local_mem)!=0:
+                    with shared_state["vis"].get_lock():
+                        vis.line(X=torch.tensor([frame_idx]), Y=torch.tensor([episode_reward]), win = win_r, update='append')
+        #                vis.line(X=torch.tensor([frame_idx]), Y=torch.tensor([epsilon]), win = win_epsil, update='append')
+                        vis.line(Y=torch.cat(q_val,0), win= win_exp_q, opts=dict(title='exp_q'+str(a_id)))            
+                    for i in range(n_step):
+                        local_mem.append([torch.zeros(state.size()).to(dev),0,0,0,0,0])
+                        
+        #            for i in range(len(local_mem)-n_step):
+        #                local_mem[i][5] = 0.99 if local_mem[i][3]!=0 else 0 
+        #                state = local_mem[i][0]
+        #                next_state = local_mem[i+n_step][0]
+        #                
+        ##                state = torch.cat([local_mem[j if j>=0 else  0][0] for j in range(i-frame_stack+1,i+1)],1)
+        ##                next_state = torch.cat([local_mem[j if j>=0 else  0][0] for j in range(i-frame_stack+1+n_step,i+1+n_step)],1)
+        #                pred , targ = rnd_model(state.to(dev),next_state.to(dev))
+        #                i_reward = ((pred-targ)**2).mean().item()
+        #                local_mem[i][4] = i_reward
+            
+                    for i in range(len(local_mem)-n_step):
+                        local_mem[i][2] = sum([local_mem[i+j][2] *(local_mem[i+j][3]**j) for j in range(n_step)])
+        #                local_mem[i][4] = sum([local_mem[i+j][4] *(0.99**j) for j in range(n_step)])
+            
+        #            ll = []
+        #            for i in range(len(local_mem)-n_step):
+        #                ll.append(local_mem[i][4])
+        #            win_ir = vis.line(Y=torch.tensor(ll),win= win_ir)
+                    with torch.no_grad():
+                        actor.reset_state()
+                        critic.reset_state()
+    #                    targetQ.reset_state()
+    #                    mhx,mcx= actor.get_state()
+    #                    thx,tcx= targetQ.get_state()
+                        state,action,reward,gamma,ireward,igamma = zip(*local_mem)
+            
+                        b_len = len(local_mem)
+                        state = torch.stack(state)
+                        action = torch.LongTensor(action).reshape((b_len,1,1))
+                        reward = torch.Tensor(reward).reshape((b_len,1,1))
+                        gamma = torch.Tensor(gamma).reshape((b_len,1,1))
+                        ireward = torch.Tensor(ireward).reshape((b_len,1,1))
+                        igamma = torch.Tensor(igamma).reshape((b_len,1,1))
+                        
+                        blocking = True if shared_queue.qsize()>max_shared_q_size and block else False
+                        shared_queue.put([state.cpu() ,action,reward,gamma,ireward,igamma ],block=blocking)
+                        
+                        
                     
                     
+                    if block == False:
+                        return 0
+            
+                state = env.reset()
+                episode_reward=0
+                gamma = 0.997
+                local_mem = []
+                actor.reset_state()
+                critic.reset_state()
+    #            targetQ.reset_state()
+                q_val = []
+                a_val = []
+                qa_val = []
                 
+            while True:
+                with shared_state["wait"].get_lock():
+                    if shared_state["wait"].value > 0:
+                        shared_state["wait"].value -=1
+                        break
+                time.sleep(0.01)
+                        
+        #    epsilon= 0.01**(EPS_CONST*frame_idx/num_frames)
+            epsilon= eps
+            
+            with torch.no_grad():
+    #            mhx,mcx = actor.get_state()
+    #            thx,tcx = targetQ.get_state()
+    #            state_mem.append([mhx,mcx,thx,tcx])
+    #            state_mem.append([mhx,mcx])
+                act, act_prob = actor(state)
+                Q,_,_,_ = critic(state)
+    #            _,_,_,_ = targetQ(state)
                 
-                if block == False:
-                    return 0
-        
-            state = env.reset()
-            episode_reward=0
-            gamma = 0.997
-            local_mem = []
-            actor.reset_state()
-            critic.reset_state()
-#            targetQ.reset_state()
-            q_val = []
-            a_val = []
-            qa_val = []
+            action = act.item() if random.random() > epsilon else random.randrange(a_dim)
+            a_val.append(act_prob.detach())
             
-        while True:
-            with shared_state["wait"].get_lock():
-                if shared_state["wait"].value > 0:
-                    shared_state["wait"].value -=1
-                    break
-            time.sleep(0.01)
-                    
-    #    epsilon= 0.01**(EPS_CONST*frame_idx/num_frames)
-        epsilon= eps
-        
-        with torch.no_grad():
-#            mhx,mcx = actor.get_state()
-#            thx,tcx = targetQ.get_state()
-#            state_mem.append([mhx,mcx,thx,tcx])
-#            state_mem.append([mhx,mcx])
-            act, act_prob = actor(state)
-            Q,_,_,_ = critic(state)
-#            _,_,_,_ = targetQ(state)
+            q_val.append(Q.detach())
+            qa_val.append(Q.gather(1,act.view(-1,1)).detach())
+    #        if vis_render:
+    #            vis.image(state.view(84,84),win = win_img)
+                
+            next_state , reward, done ,_ = env.step(action)
+            local_mem.append([state, action ,reward, gamma, 0 , 0])
             
-        action = act.item() if random.random() > epsilon else random.randrange(a_dim)
-        a_val.append(act_prob.detach())
+            state = next_state
+            episode_reward += reward
         
-        q_val.append(Q.detach())
-        qa_val.append(Q.gather(1,act.view(-1,1)).detach())
-#        if vis_render:
-#            vis.image(state.view(84,84),win = win_img)
-            
-        next_state , reward, done ,_ = env.step(action)
-        local_mem.append([state, action ,reward, gamma, 0 , 0])
         
-        state = next_state
-        episode_reward += reward
-    
-    
-        if shared_state["update"][a_id]:
-            actor.load_state_dict(shared_state["actor"].state_dict())
-            critic.load_state_dict(shared_state["critic"].state_dict())
-            shared_state["update"][a_id]=False
-            
-            print('actor_update',action.value[0].weight[0][0:5].detach())
-    
-    
-    print('done')
-    env.close()
+            if shared_state["update"][a_id]:
+                actor.load_state_dict(shared_state["actor"].state_dict())
+                critic.load_state_dict(shared_state["critic"].state_dict())
+                shared_state["update"][a_id]=False
+                
+                print('actor_update',action.value[0].weight[0][0:5].detach())
+        
+        
+        print('done')
+        env.close()
     
 
 class learner_worker(mp.Process):
@@ -820,7 +829,7 @@ if __name__ == '__main__':
     vis.close()
       
     num_processes = 2
-    
+        
     shared_queue = mp.Queue()
     shared_state = dict()
     
