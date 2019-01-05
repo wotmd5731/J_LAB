@@ -40,12 +40,12 @@ n_step = 5
 PER_alpha = 0.9  # 0 is uniform per
 count_episode = False
 RND_const = 0
-start_frame = 1000
+start_frame = 50
 num_frames = 50000
 batch_size =32
 vis_render=True
 EPS_CONST = 1
-a_lr = 0.00006
+a_lr = 0.0006
 c_lr = 0.0006
 rnd_lr = 0.00001
 burn_in_len = 5
@@ -79,7 +79,9 @@ class env_cover():
         ss,rr,dd,_ = self.env.step(act)
         #ss = np.delete(ss,[1,3])
         return torch.from_numpy(ss).float().view(1,s_dim).to(dev),rr,dd,0
-
+    def render(self):
+        self.env.render()
+        
     def close(self):
         self.env.close()
 
@@ -351,7 +353,7 @@ class Actor(nn.Module):
         self.net = nn.Sequential(
                 nn.Linear(self.lstm_size,128),nn.PReLU(),
                 nn.Linear(128,128),nn.PReLU(),
-                nn.Linear(128,num_outputs),nn.Tanh(),
+                nn.Linear(128,num_outputs),nn.Sigmoid(),
                 )
 
         self.hx = None
@@ -519,8 +521,8 @@ def calc_td(models,state, action, reward,gamma,ireward,igamma,model_state , stor
         
 
 
-class actor_worker(mp.Process):
-    def __init__(self.a_id,num_frames,shared_state,shared_queue, eps=0.1,block=True):
+class actor_worker():
+    def __init__(self,a_id,num_frames,shared_state,shared_queue, eps=0.1,block=True):
         super(actor_worker,self).__init__()
         self.shared_state = shared_state
         self.shared_queue = shared_queue
@@ -533,6 +535,7 @@ class actor_worker(mp.Process):
         self.win_epsil = vis.line(Y=torch.tensor([0]),opts=dict(title='epsilon'+str(a_id)))
         self.win_r = vis.line(Y=torch.tensor([0]),opts=dict(title='reward'+str(a_id)))
         self.win_exp_q = vis.line(Y=torch.tensor([0]),opts=dict(title='exp_q'+str(a_id)))
+        self.win_exp_a = vis.line(Y=torch.tensor([0]),opts=dict(title='exp_a'+str(a_id)))
 
               
         self.actor = Actor(s_dim, a_dim, dev ).to(dev)
@@ -561,7 +564,12 @@ class actor_worker(mp.Process):
                     with self.shared_state["vis"].get_lock():
                         vis.line(X=torch.tensor([frame_idx]), Y=torch.tensor([episode_reward]), win = self.win_r, update='append')
         #                vis.line(X=torch.tensor([frame_idx]), Y=torch.tensor([epsilon]), win = win_epsil, update='append')
-                        vis.line(Y=torch.cat(q_val,0), win= self.win_exp_q, opts=dict(title='exp_q'+str(self.a_id)))            
+                        vis.line(Y=torch.cat(q_val,0), win= self.win_exp_q, opts=dict(title='exp_q'+str(self.a_id)))
+                        vis.line(Y=torch.cat(a_val,0), win= self.win_exp_a, opts=dict(title='exp_a'+str(self.a_id)))
+#                        vis.line(Y=torch.cat(q_val,0), win= self.win_exp_qa, opts=dict(title='exp_q'+str(self.a_id)))
+                        
+                        
+                        
                     for i in range(n_step):
                         local_mem.append([torch.zeros(state.size()).to(dev),0,0,0,0,0])
                         
@@ -593,15 +601,15 @@ class actor_worker(mp.Process):
                         state,action,reward,gamma,ireward,igamma = zip(*local_mem)
             
                         b_len = len(local_mem)
-                        state = torch.stack(state)
-                        action = torch.LongTensor(action).reshape((b_len,1,1))
-                        reward = torch.Tensor(reward).reshape((b_len,1,1))
-                        gamma = torch.Tensor(gamma).reshape((b_len,1,1))
-                        ireward = torch.Tensor(ireward).reshape((b_len,1,1))
-                        igamma = torch.Tensor(igamma).reshape((b_len,1,1))
+                        state = torch.stack(state).cpu()
+                        action = torch.LongTensor(action).reshape((b_len,1,1)).cpu()
+                        reward = torch.Tensor(reward).reshape((b_len,1,1)).cpu()
+                        gamma = torch.Tensor(gamma).reshape((b_len,1,1)).cpu()
+                        ireward = torch.Tensor(ireward).reshape((b_len,1,1)).cpu()
+                        igamma = torch.Tensor(igamma).reshape((b_len,1,1)).cpu()
                         
                         blocking = True if self.shared_queue.qsize()>max_shared_q_size and self.block else False
-                        self.shared_queue.put([state.cpu() ,action,reward,gamma,ireward,igamma ],block=blocking)
+                        self.shared_queue.put([state ,action,reward,gamma,ireward,igamma ],block=blocking)
                         
                         
                     
@@ -640,8 +648,7 @@ class actor_worker(mp.Process):
     #            _,_,_,_ = targetQ(state)
                 
             action = act.item() if random.random() > self.eps else random.randrange(a_dim)
-            a_val.append(act_prob.detach())
-            
+            a_val.append(act.detach())
             q_val.append(Q.detach())
             qa_val.append(Q.gather(1,act.view(-1,1)).detach())
     #        if vis_render:
@@ -649,6 +656,7 @@ class actor_worker(mp.Process):
                 
             next_state , reward, done ,_ = self.env.step(action)
             local_mem.append([state, action ,reward, gamma, 0 , 0])
+            self.env.render()
             
             state = next_state
             episode_reward += reward
@@ -659,14 +667,14 @@ class actor_worker(mp.Process):
                 self.critic.load_state_dict(self.shared_state["critic"].state_dict())
                 self.shared_state["update"][self.a_id]=False
                 
-                print('actor_update',action.value[0].weight[0][0:5].detach())
+#                print('actor_update',action.value[0].weight[0][0:5].detach())
         
         
         print('done')
         self.env.close()
     
 
-class learner_worker(mp.Process):
+class learner_worker():
     def __init__(self,max_id,num_frames,shared_state,shared_queue,block=True):
         super(learner_worker,self).__init__()
         self.shared_state = shared_state
@@ -702,32 +710,34 @@ class learner_worker(mp.Process):
         self.replay_buffer = ReplayBuffer(mem_size,self.models,self.shared_state)
 
 
-    def soft_update(target_model, model, tau):
+    def soft_update(self,target_model, model, tau):
         for target_param, param in zip(target_model.parameters(), model.parameters()):
             target_param.data.copy_(target_param.data * (1.0 - tau) + param.data * tau)
-
+    
+    def push_buffer(self,blocking=False):
+        if self.shared_queue.qsize()!=0:
+#            while shared_queue.qsize() != 0:
+            data = self.shared_queue.get(block=blocking)
+            self.replay_buffer.push(data)
+    
+    
     def run(self):
 
 
         while len(self.replay_buffer) < start_frame and self.block:
-            
-            data = self.shared_queue.get(block=True)
-            self.replay_buffer.push(data)
+            self.push_buffer(True)
             print(repr(self.replay_buffer),end='\r')
         
         
         for frame_idx in range(self.num_frames):
             print(repr(self.replay_buffer),end='\r')
-            if self.shared_queue.qsize()!=0:
-#            while shared_queue.qsize() != 0:
-                data = self.shared_queue.get()
-                self.replay_buffer.push(data)
+            self.push_buffer(False)
     
             loss, a_loss = self.update()
             print(f'#learner  l:{loss:.5f}')
             with self.shared_state["vis"].get_lock():
-                vis.line(X=torch.tensor([frame_idx]),Y=torch.tensor([loss]),win=self.win_l0,update ='append')
-                vis.line(X=torch.tensor([frame_idx]),Y=torch.tensor([a_loss]),win=self.win_l1,update ='append')
+                self.win_l0 = vis.line(X=torch.tensor([frame_idx]),Y=torch.tensor([loss]),win=self.win_l0,update ='append')
+                self.win_l1 = vis.line(X=torch.tensor([frame_idx]),Y=torch.tensor([a_loss]),win=self.win_l1,update ='append')
             
             with self.shared_state["wait"].get_lock():
                 self.shared_state["wait"].value +=3
@@ -822,7 +832,15 @@ class learner_worker(mp.Process):
 #        
 
     
-        
+
+def act_process(idd,num_frames,shared_state,shared_queue,eps):
+    act=  actor_worker(idd,num_frames,shared_state,shared_queue,eps,True)
+    act.run()        
+def lea_preocess(idd,num_frames,shared_state,shared_queue):
+    lea = learner_worker(idd,num_frames,shared_state,shared_queue,True)
+    lea.run()
+
+
 
 
 if __name__ == '__main__':
@@ -830,7 +848,7 @@ if __name__ == '__main__':
     
     vis.close()
       
-    num_processes = 2
+    num_processes = 1
         
     shared_queue = mp.Queue()
     shared_state = dict()
@@ -845,17 +863,29 @@ if __name__ == '__main__':
     shared_state["wait"].value = start_frame*10
     
     
+    
+    
+    
+    
+    
+    
+#    act.run()
+#    lea.push_buffer(False)
+#    for i in range(100):
+#        act.run()
+#        lea.run()
+    
 #    for i in range(100):
 #        actor_process(0,num_frames,shared_state,shared_queue,False)
 #        actor_process(0,num_frames,shared_state,shared_queue,False)
 #        learner_process(1,num_frames,shared_state,shared_queue,False)
 #    time.sleep(10)
-##    
+###    
     proc_list = []
-    proc_list.append(mp.Process(target=learner_process, args=(num_processes,num_frames,shared_state,shared_queue)))
+    proc_list.append(mp.Process(target=lea_preocess, args=(num_processes,num_frames,shared_state,shared_queue)))
     eps = [0.1,0.2,0.4,0.3,0.2,0.6,0.4,0.6,0.2,0.4]
     for i in range(num_processes):
-        proc_list.append( mp.Process(target=actor_process, args=(i,num_frames,shared_state,shared_queue,eps[i])) )
+        proc_list.append( mp.Process(target=act_process, args=(i,num_frames,shared_state,shared_queue,eps[i])) )
 
 
     for proc in proc_list:
@@ -874,4 +904,4 @@ if __name__ == '__main__':
             
         shared_queue.join_thread()
     
-    
+#    
