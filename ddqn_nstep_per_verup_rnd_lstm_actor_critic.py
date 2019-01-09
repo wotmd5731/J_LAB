@@ -34,6 +34,10 @@ def time_check(num=0):
 +RND
 +lstm
 """
+MAX_ACCESS = 100
+COUNT_MIN = 1000
+
+
 max_shared_q_size = 5
 frame_stack = 1
 n_step = 5
@@ -45,7 +49,7 @@ num_frames = 50000
 batch_size =32
 vis_render=True
 EPS_CONST = 1
-a_lr = 0.0006
+a_lr = 0.00006
 c_lr = 0.0006
 rnd_lr = 0.00001
 burn_in_len = 5
@@ -72,12 +76,12 @@ class env_cover():
         self.env = gym.make(env_id)
     def reset(self):
         ss = self.env.reset()
-        #ss = np.delete(ss,[1,3])
+        ss = np.delete(ss,[1,3])
         return torch.from_numpy(ss).float().view(1,s_dim).to(dev)
     #return obs_preproc(env.render(mode='rgb_array')).to(dev)
     def step(self,act):
         ss,rr,dd,_ = self.env.step(act)
-        #ss = np.delete(ss,[1,3])
+        ss = np.delete(ss,[1,3])
         return torch.from_numpy(ss).float().view(1,s_dim).to(dev),rr,dd,0
     def render(self):
         self.env.render()
@@ -89,7 +93,7 @@ class env_cover():
 cnn_enable = False
 vis_render=False
 #s_dim = 2
-s_dim = 4
+s_dim = 2
 state_shape = (1,1,s_dim)
 #a_dim = 3
 
@@ -155,7 +159,7 @@ class ReplayBuffer():
         td_loss_total = priority.max()
         with self.shared_state["vis"].get_lock():
             vis.bar(X=td_loss.cpu().view(-1,1), win= self.win_bar_td, opts=dict(title='push td_loss'))
-        self.buffer.append([data,td_loss,priority,td_loss_total,state_mem])
+        self.buffer.append([data,td_loss,priority,td_loss_total,state_mem,0])
         while self.count > self.capacity:
             self.count -= self.buffer.popleft()[0][0].size(0)  if not count_episode else 1
 
@@ -171,7 +175,8 @@ class ReplayBuffer():
             ii = list(torch.utils.data.WeightedRandomSampler(priority , 1, True))[0]
          
             start = ii - burn_in_len if ii-burn_in_len>=0 else 0
-            brun_state = episode[0][start:ii].to(dev)
+            burn_state = episode[0][start:ii].to(dev)
+            burn_action = episode[1][start:ii].to(dev)
             
             model_state = torch.cat(state_mem[start],0)
             
@@ -184,9 +189,9 @@ class ReplayBuffer():
             ireward =episode[4][ii:ii+seq_len+n_step]
             igamma  =episode[5][ii:ii+seq_len+n_step]
             
-            s.append([episode_idx,ii,state,action,reward,gamma,ireward,igamma, model_state ,brun_state])
+            s.append([episode_idx,ii,state,action,reward,gamma,ireward,igamma, model_state ,burn_state, burn_action])
 
-        epi_idx,seq_idx,state, action, reward,gamma,ireward,igamma,model_state, burn_state = zip(*s)
+        epi_idx,seq_idx,state, action, reward,gamma,ireward,igamma,model_state, burn_state, burn_action = zip(*s)
         
         shape = (batch_size,-1)
         state   = torch.cat(state,1).to(dev)
@@ -204,10 +209,24 @@ class ReplayBuffer():
 #        thx = torch.cat(model_state[2],0).reshape((batch_size,8,1,-1 )).to(dev)
 #        tcx = torch.cat(model_state[3],0).reshape((batch_size,8,1,-1 )).to(dev)
         
-        return epi_idx,seq_idx,state, action, reward,gamma,ireward,igamma,hxcx, burn_state
+        return epi_idx,seq_idx,state, action, reward,gamma,ireward,igamma,hxcx, burn_state ,burn_action
     
+    def mem_remove(self,idx):
+        idx = reversed(idx.unique(sorted=True))
+        if self.count < COUNT_MIN:
+            return 0
+        for epi_idx in idx:
+            if self.buffer[epi_idx][5]>MAX_ACCESS:
+                print(epi_idx.item(),end=' ,')
+                self.count -= self.buffer[epi_idx][0][0].size(0) if not count_episode else 1
+                del self.buffer[epi_idx]
+
+
+
     def priority_update(self,epi_idx,seq_idx,loss):
         td_array = self.buffer[epi_idx][1]
+        self.buffer[epi_idx][5] +=1
+
 #        priority = self.buffer[epi_idx][2]
 #        total_priority = self.buffer[epi_idx][3]
         
@@ -245,7 +264,7 @@ class Flatten(nn.Module):
         return inputs.view(inputs.size(0),-1)
 
 class Critic(nn.Module):
-    def __init__(self, num_inputs, num_outputs,  dev ):
+    def __init__(self, num_inputs, num_action,  dev ):
         super(Critic,self).__init__()
         if cnn_enable:
             size=7*7*64
@@ -254,31 +273,37 @@ class Critic(nn.Module):
                     nn.Conv2d(64,64,4,stride=2),nn.PReLU(),
                     nn.Conv2d(64,64,3,stride=1),nn.PReLU(),
                     Flatten(),
-                    nn.Linear(size,128),nn.PReLU(),
+                    nn.Linear(size,120),nn.PReLU(),
+                    )
+            self.feature_action = nn.Sequential(
+                    nn.Linear(num_action,8),nn.PReLU(),
                     )
         else :
             self.feature = nn.Sequential(
                     nn.Linear(s_dim,128),nn.PReLU(),
                     )
+            self.feature_action = nn.Sequential(
+                    nn.Linear(num_action,8),nn.PReLU(),
+                    )
 
         self.lstm_size = 128
         self.lstm = nn.LSTMCell(self.lstm_size, self.lstm_size)
         
-        self.advantage = nn.Sequential(
-                nn.Linear(self.lstm_size,128),nn.PReLU(),
-                nn.Linear(128,128),nn.PReLU(),
-                nn.Linear(128,num_outputs),
-                )
+#        self.advantage = nn.Sequential(
+#                nn.Linear(self.lstm_size,128),nn.PReLU(),
+#                nn.Linear(128,128),nn.PReLU(),
+#                nn.Linear(128,num_outputs),
+#                )
         self.value = nn.Sequential(
                 nn.Linear(self.lstm_size,128),nn.PReLU(),
                 nn.Linear(128,128),nn.PReLU(),
                 nn.Linear(128,1),
                 )
-        self.iadvantage = nn.Sequential(
-                nn.Linear(self.lstm_size,128),nn.PReLU(),
-                nn.Linear(128,128),nn.PReLU(),
-                nn.Linear(128,num_outputs),
-                )
+#        self.iadvantage = nn.Sequential(
+#                nn.Linear(self.lstm_size,128),nn.PReLU(),
+#                nn.Linear(128,128),nn.PReLU(),
+#                nn.Linear(128,num_outputs),
+#                )
         self.ivalue = nn.Sequential(
                 nn.Linear(self.lstm_size,128),nn.PReLU(),
                 nn.Linear(128,128),nn.PReLU(),
@@ -289,10 +314,11 @@ class Critic(nn.Module):
 
         self.dev = dev
         
-    def forward(self,x):
+    def forward(self,x,a):
 #        aa = torch.ones(x.size())*a
 #        x = torch.cat([x,aa],dim=1)
-        x = self.feature(x)
+        x = torch.cat([ self.feature(x), self.feature_action(a)],1)
+
         
         if self.hx is None: 
             self.hx = torch.zeros((x.size(0) ,self.lstm_size)).to(self.dev)
@@ -302,16 +328,16 @@ class Critic(nn.Module):
         
         x= self.hx
         
-        adv = self.advantage(x)
+        #adv = self.advantage(x)
         val = self.value(x)
-        iadv = self.iadvantage(x)
+        #iadv = self.iadvantage(x)
         ival = self.ivalue(x)
         
-        Q = val + adv - adv.mean()
-        iQ = ival + iadv - iadv.mean()
-        Qa = Q.argmax(1).view(-1,1)
-        iQa = iQ.argmax(1).view(-1,1)
-        return Q,Qa,iQ,iQa
+#        Q = val + adv - adv.mean()
+#        iQ = ival + iadv - iadv.mean()
+#        Qa = Q.argmax(1).view(-1,1)
+#        iQa = iQ.argmax(1).view(-1,1)
+        return val,_,ival,_
 
     
     def set_state(self, hxcx ):
@@ -374,9 +400,10 @@ class Actor(nn.Module):
         x= self.hx
         
         act_prob = self.net(x)
-        
-        m = Categorical(act_prob)
-        act = m.sample()
+        act = act_prob.argmax()
+
+#        m = Categorical(act_prob)
+#        act = m.sample()
         
         return  act,act_prob
 
@@ -463,39 +490,35 @@ def calc_td(models,state, action, reward,gamma,ireward,igamma,model_state , stor
     
     
     if stored_state:
-        models[0].set_state(model_state[0])
-        models[1].set_state(model_state[1])
-        models[2].set_state(model_state[2])
-        models[3].set_state(model_state[3])
+        [models[i].set_state(model_state[i]) for i in range(4)]
         state_mem.append([models[i].get_state() for i in range(4)])
         for i in range(story_len):
             _,_ = models[0](state[i])
             _,_ = models[1](state[i])
-            _,_,_,_ = models[2](state[i])
-            _,_,_,_ = models[3](state[i])
+            _,_,_,_ = models[2](state[i],action[i])
+            _,_,_,_ = models[3](state[i],action[i])
             state_mem.append([models[i].get_state() for i in range(4)])
     
 
-    models[0].set_state(model_state[0])
-    models[1].set_state(model_state[1])
-    models[2].set_state(model_state[2])
-    models[3].set_state(model_state[3])
+    [models[i].set_state(model_state[i]) for i in range(4)]
         
     for i in range(n_step):
         _,_ = models[1](state[i])
-        _,_,_,_ = models[3](state[i])
+        _,_,_,_ = models[3](state[i],action[i])
         
         
 #        if stored_state:
 #            state_mem.append([models[i].get_state() for i in range(4)])
             
     for i in range(story_len):
-        act,_ = models[0](state[i])
-        tact,_ = models[1](state[i+n_step])
-        qv,_,iqv,_ = models[2](state[i])
-        tqv,_,tiqv,_ = models[3](state[i+n_step])
-        y_t_hat = reward[i] + (gamma[i+n_step]**n_step)*tqv.gather(1,tact.view(-1,1))
-        losses.append ( qv.gather(1,action[i]) - y_t_hat.detach())
+        _,act = models[0](state[i])
+        _,tact = models[1](state[i+n_step])
+        qv,_,iqv,_ = models[2](state[i],action[i])
+        tqv,_,tiqv,_ = models[3](state[i+n_step],tact)
+        #y_t_hat = reward[i] + (gamma[i+n_step]**n_step)*tqv.gather(1,tact.view(-1,1))
+        y_t_hat = reward[i] + (gamma[i+n_step]**n_step)*tqv
+        #losses.append ( qv.gather(1,action[i]) - y_t_hat.detach())
+        losses.append ( qv - y_t_hat.detach())
         
         
 #        if stored_state:
@@ -536,6 +559,7 @@ class actor_worker():
         self.win_r = vis.line(Y=torch.tensor([0]),opts=dict(title='reward'+str(a_id)))
         self.win_exp_q = vis.line(Y=torch.tensor([0]),opts=dict(title='exp_q'+str(a_id)))
         self.win_exp_a = vis.line(Y=torch.tensor([0]),opts=dict(title='exp_a'+str(a_id)))
+        self.win_exp_aprob = vis.line(Y=torch.tensor([0]),opts=dict(title='exp_aprob'+str(a_id)))
 
               
         self.actor = Actor(s_dim, a_dim, dev ).to(dev)
@@ -544,6 +568,7 @@ class actor_worker():
         self.actor.load_state_dict(self.shared_state["actor"].state_dict())
         self.critic.load_state_dict(self.shared_state["critic"].state_dict())
 
+        self.random_prob= torch.distributions.normal.Normal(torch.zeros([a_dim]),torch.ones([a_dim])*0.1)
 
 
 
@@ -556,8 +581,11 @@ class actor_worker():
         gamma = 0.997
         state = self.env.reset()
         q_val=[]
+        aprob_val=[]
         a_val=[]
         qa_val=[]
+        act_prob = torch.zeros([1,a_dim])
+
         for frame_idx in range(self.num_frames):
             if done:
                 if len(local_mem)!=0:
@@ -565,13 +593,14 @@ class actor_worker():
                         vis.line(X=torch.tensor([frame_idx]), Y=torch.tensor([episode_reward]), win = self.win_r, update='append')
         #                vis.line(X=torch.tensor([frame_idx]), Y=torch.tensor([epsilon]), win = win_epsil, update='append')
                         vis.line(Y=torch.cat(q_val,0), win= self.win_exp_q, opts=dict(title='exp_q'+str(self.a_id)))
-                        vis.line(Y=torch.cat(a_val,0), win= self.win_exp_a, opts=dict(title='exp_a'+str(self.a_id)))
+                        vis.line(Y=torch.stack(a_val,0), win= self.win_exp_a, opts=dict(title='exp_a'+str(self.a_id)))
+                        vis.line(Y=torch.cat(aprob_val,0), win= self.win_exp_aprob, opts=dict(title='exp_aprob'+str(self.a_id)))
 #                        vis.line(Y=torch.cat(q_val,0), win= self.win_exp_qa, opts=dict(title='exp_q'+str(self.a_id)))
                         
                         
                         
                     for i in range(n_step):
-                        local_mem.append([torch.zeros(state.size()).to(dev),0,0,0,0,0])
+                        local_mem.append([torch.zeros(state.size()).to(dev), torch.zeros(act_prob.size()).to(dev),0,0,0,0])
                         
         #            for i in range(len(local_mem)-n_step):
         #                local_mem[i][5] = 0.99 if local_mem[i][3]!=0 else 0 
@@ -602,7 +631,7 @@ class actor_worker():
             
                         b_len = len(local_mem)
                         state = torch.stack(state).cpu()
-                        action = torch.LongTensor(action).reshape((b_len,1,1)).cpu()
+                        action = torch.stack(action).cpu()
                         reward = torch.Tensor(reward).reshape((b_len,1,1)).cpu()
                         gamma = torch.Tensor(gamma).reshape((b_len,1,1)).cpu()
                         ireward = torch.Tensor(ireward).reshape((b_len,1,1)).cpu()
@@ -626,6 +655,7 @@ class actor_worker():
     #            targetQ.reset_state()
                 q_val = []
                 a_val = []
+                aprob_val = []
                 qa_val = []
                 
             while True:
@@ -633,7 +663,7 @@ class actor_worker():
                     if self.shared_state["wait"].value > 0:
                         self.shared_state["wait"].value -=1
                         break
-                time.sleep(0.01)
+                time.sleep(0.1)
                         
         #    epsilon= 0.01**(EPS_CONST*frame_idx/num_frames)
         #    epsilon= eps
@@ -643,20 +673,22 @@ class actor_worker():
     #            thx,tcx = targetQ.get_state()
     #            state_mem.append([mhx,mcx,thx,tcx])
     #            state_mem.append([mhx,mcx])
-                act, act_prob = self.actor(state)
-                Q,_,_,_ = self.critic(state)
+                _, act_prob = self.actor(state)
+                Q,_,_,_ = self.critic(state,act_prob)
     #            _,_,_,_ = targetQ(state)
                 
-            action = act.item() if random.random() > self.eps else random.randrange(a_dim)
-            a_val.append(act.detach())
+            r_act_prob = act_prob + self.random_prob.sample().to(dev)
+            action = r_act_prob.argmax()
+            aprob_val.append(r_act_prob)
+            a_val.append(action)
             q_val.append(Q.detach())
-            qa_val.append(Q.gather(1,act.view(-1,1)).detach())
+            #qa_val.append(Q.gather(1,act.view(-1,1)).detach())
     #        if vis_render:
     #            vis.image(state.view(84,84),win = win_img)
                 
-            next_state , reward, done ,_ = self.env.step(action)
-            local_mem.append([state, action ,reward, gamma, 0 , 0])
-            self.env.render()
+            next_state , reward, done ,_ = self.env.step(action.item())
+            local_mem.append([state, r_act_prob.detach() ,reward, gamma, 0 , 0])
+            #self.env.render()
             
             state = next_state
             episode_reward += reward
@@ -684,8 +716,8 @@ class learner_worker():
         self.block = block
 
         self.win_ir = vis.line(Y=torch.tensor([0]),opts=dict(title='ireward'))
-        self.win_l0 = vis.line(Y=torch.tensor([0]),opts=dict(title='loss'))
-        self.win_l1 = vis.line(Y=torch.tensor([0]),opts=dict(title='rnd_loss'))
+        self.win_l0 = vis.line(Y=torch.tensor([0]),opts=dict(title='Q_loss'))
+        self.win_l1 = vis.line(Y=torch.tensor([0]),opts=dict(title='policy_loss'))
         
         self.actor = Actor(s_dim, a_dim, dev ).to(dev)
         self.Tactor = Actor(s_dim, a_dim, dev ).to(dev)
@@ -700,7 +732,7 @@ class learner_worker():
         self.critic.load_state_dict(self.shared_state["critic"].state_dict())
         self.Tcritic.load_state_dict(self.shared_state["critic"].state_dict())
     
-        self.models=[self.actor,self.Tactor, self.critic,self.Tcritic]
+        self.models=[self.actor,self.Tactor, self.critic,self.Tcritic, self.rnd_model]
         
         self.Act_optimizer = optim.Adam(self.actor.parameters(),a_lr)
         self.Cri_optimizer = optim.Adam(self.critic.parameters(),c_lr)
@@ -734,13 +766,13 @@ class learner_worker():
             self.push_buffer(False)
     
             loss, a_loss = self.update()
-            print(f'#learner  l:{loss:.5f}')
+            print(f'#learner  l:{loss:.5f}, pl:{a_loss:.5f}')
             with self.shared_state["vis"].get_lock():
                 self.win_l0 = vis.line(X=torch.tensor([frame_idx]),Y=torch.tensor([loss]),win=self.win_l0,update ='append')
                 self.win_l1 = vis.line(X=torch.tensor([frame_idx]),Y=torch.tensor([a_loss]),win=self.win_l1,update ='append')
             
             with self.shared_state["wait"].get_lock():
-                self.shared_state["wait"].value +=3
+                self.shared_state["wait"].value +=10
             
                 
             if frame_idx % 4 == 0:
@@ -751,14 +783,14 @@ class learner_worker():
 #                update_target(targetQ,mainQ)
             if frame_idx % 3 == 0:
     #        if random.random() < 1/20 :
-                self.shared_state["actor"].load_state_dict(self.models[0].state_dict())
-                self.shared_state["critic"].load_state_dict(self.models[2].state_dict())
+                self.shared_state["actor"].load_state_dict(self.models[1].state_dict())
+                self.shared_state["critic"].load_state_dict(self.models[3].state_dict())
                 for i in range(self.max_id):
                     self.shared_state["update"][i]=True
             if self.block == False:
                 return 0
     def update(self):
-        epi_idx,seq_idx,state, action, reward,gamma,ireward,igamma,hxcx, burn_state = self.replay_buffer.sample(batch_size)
+        epi_idx,seq_idx,state, action, reward,gamma,ireward,igamma,hxcx, burn_state, burn_action = self.replay_buffer.sample(batch_size)
         aloss = []
         burned_state = []
 #        [models[i].reset_state() for i in range(4)]
@@ -775,16 +807,16 @@ class learner_worker():
                 for j in range(len(burn_state[i])):
                     _,_ = self.models[0](burn_state[i][j])
                     _,_ = self.models[1](burn_state[i][j])
-                    _,_,_,_ = self.models[2](burn_state[i][j])
-                    _,_,_,_ = self.models[3](burn_state[i][j])
+                    _,_,_,_ = self.models[2](burn_state[i][j],burn_action[i][j])
+                    _,_,_,_ = self.models[3](burn_state[i][j],burn_action[i][j])
                 model_state = [self.models[i].get_state() for i in range(4)]
                 burned_state.append( torch.stack(model_state,0) )
                 
             
         burned_state = torch.cat (burned_state,2)
         
-        loss,_ = calc_td(self.models,state, action, reward,gamma,ireward,igamma,burned_state,seq_len) 
         self.Cri_optimizer.zero_grad()
+        loss,_ = calc_td(self.models,state, action, reward,gamma,ireward,igamma,burned_state,seq_len) 
         loss.pow(2).mean().backward()
         self.Cri_optimizer.step()
         
@@ -799,14 +831,27 @@ class learner_worker():
         self.models[2].set_state(burned_state[2])
         self.models[3].set_state(burned_state[3])
         
-        
-        for i in range(seq_len):
-            act,_ = self.models[0](state[i])
-            qv,_,iqv,_ = self.models[2](state[i])
-            aloss.append( qv.gather(1,act.view(-1,1)) )
-        aloss = torch.cat(aloss,1)
+#        
+#        for i in range(seq_len):
+#            act,_ = self.models[0](state[i])
+#            qv,_,iqv,_ = self.models[2](state[i])
+#            aloss.append( qv.gather(1,act.view(-1,1)) )
+#        aloss = torch.cat(aloss,1)
         self.Act_optimizer.zero_grad()
-        aloss.mean().backward()
+        model_act = []
+        for i in range(seq_len):
+            _,act_prob = self.models[0](state[i])
+            model_act.append(act_prob)
+        model_val = []
+        for i in range(seq_len):
+            qv,_,iqv,_ = self.models[2](state[i],model_act[i])
+            model_val.append(qv)
+
+        model_val = torch.stack(model_val,1)
+        policy_loss = -model_val.mean()
+        model_action_grad = torch.autograd.grad(policy_loss,model_act)
+        model_act = torch.stack(model_act,1)
+        model_act.backward(gradient = torch.stack(model_action_grad,1))
         self.Act_optimizer.step()
         
 
@@ -819,8 +864,10 @@ class learner_worker():
             
         for i in range(len(epi_idx)):
             self.replay_buffer.priority_update(epi_idx[i],seq_idx[i],loss[i].detach())
-        
-        return loss.pow(2).mean().item(),aloss.mean()
+        self.replay_buffer.mem_remove(epi_idx)
+
+        return loss.pow(2).mean().item(),policy_loss.detach().item()
+
         
 #    #    if len(replay_buffer)==0:
 #        if block==False:
@@ -863,8 +910,14 @@ if __name__ == '__main__':
     shared_state["wait"].value = start_frame*10
     
     
-    
-    
+    act = act_process(0,num_frames,shared_state,shared_queue,0.1,False)
+    act.run()
+    act.run()
+    act.run()
+    lea = lea_preocess(1,num_frames,shared_state,shared_queue,False)
+    lea.push_buffer()
+    lea.push_buffer()
+    lea.push_buffer()
     
     
     
