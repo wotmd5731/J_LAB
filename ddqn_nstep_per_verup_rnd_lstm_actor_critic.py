@@ -45,12 +45,12 @@ PER_alpha = 0.9  # 0 is uniform per
 count_episode = False
 RND_const = 0
 start_frame = 50
-num_frames = 50000
+num_frames = 30000
 batch_size =32
 vis_render=True
 EPS_CONST = 1
-a_lr = 0.00006
-c_lr = 0.0006
+a_lr = 0.0001
+c_lr = 0.001
 rnd_lr = 0.00001
 burn_in_len = 5
 mem_size = 20000
@@ -76,12 +76,12 @@ class env_cover():
         self.env = gym.make(env_id)
     def reset(self):
         ss = self.env.reset()
-        ss = np.delete(ss,[1,3])
+#        ss = np.delete(ss,[1,3])
         return torch.from_numpy(ss).float().view(1,s_dim).to(dev)
     #return obs_preproc(env.render(mode='rgb_array')).to(dev)
     def step(self,act):
         ss,rr,dd,_ = self.env.step(act)
-        ss = np.delete(ss,[1,3])
+#        ss = np.delete(ss,[1,3])
         return torch.from_numpy(ss).float().view(1,s_dim).to(dev),rr,dd,0
     def render(self):
         self.env.render()
@@ -93,7 +93,7 @@ class env_cover():
 cnn_enable = False
 vis_render=False
 #s_dim = 2
-s_dim = 2
+s_dim = 4
 state_shape = (1,1,s_dim)
 #a_dim = 3
 
@@ -909,18 +909,17 @@ if __name__ == '__main__':
     shared_state["wait"] = mp.Value('i',0)
     shared_state["wait"].value = start_frame*10
     
-    
-    act = act_process(0,num_frames,shared_state,shared_queue,0.1,False)
-    act.run()
-    act.run()
-    act.run()
-    lea = lea_preocess(1,num_frames,shared_state,shared_queue,False)
-    lea.push_buffer()
-    lea.push_buffer()
-    lea.push_buffer()
-    
-    
-    
+#    
+#    act = act_process(0,num_frames,shared_state,shared_queue,0.1,False)
+#    act.run()
+#    act.run()
+#    act.run()
+#    lea = lea_preocess(1,num_frames,shared_state,shared_queue,False)
+#    lea.push_buffer()
+#    lea.push_buffer()
+#    lea.push_buffer()
+
+
     
 #    act.run()
 #    lea.push_buffer(False)

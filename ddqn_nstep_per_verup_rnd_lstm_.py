@@ -41,12 +41,12 @@ PER_alpha = 0.9  # 0 is uniform per
 count_episode = False
 RND_const = 0
 start_frame = 1000
-num_frames = 50000
+num_frames = 30000
 batch_size =32
 vis_render=True
 EPS_CONST = 1
-lr = 0.0006
-rnd_lr = 0.00001
+lr = 0.001
+rnd_lr = 0.0001
 burn_in_len = 5
 mem_size = 20000
 seq_len = 7
@@ -85,11 +85,11 @@ class env_cover():
 
 cnn_enable = False
 vis_render=False
-s_dim = 2
+s_dim = 4
 state_shape = (1,1,s_dim)
-a_dim = 3
+a_dim = 2
 
-env_id = 'MountainCar-v0'
+#env_id = 'MountainCar-v0'
 
 
 

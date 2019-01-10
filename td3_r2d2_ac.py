@@ -34,7 +34,7 @@ def time_check(num=0):
 +RND
 +lstm
 """
-MAX_ACCESS = 1000
+MAX_ACCESS = 100
 POLICY_FREQ = 2
 SOFT_TAU = 0.05
 COUNT_MIN = 1000
@@ -78,12 +78,12 @@ class env_cover():
         self.env = gym.make(env_id)
     def reset(self):
         ss = self.env.reset()
-        ss = np.delete(ss,[1,3])
+#        ss = np.delete(ss,[1,3])
         return torch.from_numpy(ss).float().view(1,s_dim).to(dev)
     #return obs_preproc(env.render(mode='rgb_array')).to(dev)
     def step(self,act):
         ss,rr,dd,_ = self.env.step(act)
-        ss = np.delete(ss,[1,3])
+#        ss = np.delete(ss,[1,3])
         return torch.from_numpy(ss).float().view(1,s_dim).to(dev),rr,dd,0
     def render(self):
         self.env.render()
@@ -95,7 +95,7 @@ class env_cover():
 cnn_enable = False
 vis_render=False
 #s_dim = 2
-s_dim = 2
+s_dim = 4
 state_shape = (1,1,s_dim)
 #a_dim = 3
 
@@ -336,8 +336,8 @@ class Critic(nn.Module):
         x= self.hx
         
         #adv = self.advantage(x)
-        val1 = self.value(x)
-        val2 = self.value(x)
+        val1 = self.value1(x)
+        val2 = self.value2(x)
         #iadv = self.iadvantage(x)
         ival = self.ivalue(x)
         
@@ -921,14 +921,14 @@ if __name__ == '__main__':
     shared_state["wait"].value = start_frame*10
     
     
-    act = actor_worker(0,num_frames,shared_state,shared_queue,0.1,False)
-    act.run()
-    act.run()
-    act.run()
-    lea = learner_worker(1,num_frames,shared_state,shared_queue,False)
-    lea.push_buffer()
-    lea.push_buffer()
-    lea.push_buffer()
+#    act = actor_worker(0,num_frames,shared_state,shared_queue,0.1,False)
+#    act.run()
+#    act.run()
+#    act.run()
+#    lea = learner_worker(1,num_frames,shared_state,shared_queue,False)
+#    lea.push_buffer()
+#    lea.push_buffer()
+#    lea.push_buffer()
     
 #    for i in range(100):
 #        act.run()
