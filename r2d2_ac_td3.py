@@ -34,7 +34,9 @@ def time_check(num=0):
 +RND
 +lstm
 """
-MAX_ACCESS = 100
+MAX_ACCESS = 1000
+POLICY_FREQ = 2
+SOFT_TAU = 0.05
 COUNT_MIN = 1000
 
 
@@ -45,12 +47,12 @@ PER_alpha = 0.9  # 0 is uniform per
 count_episode = False
 RND_const = 0
 start_frame = 50
-num_frames = 50000
+num_frames = 30000
 batch_size =32
 vis_render=True
 EPS_CONST = 1
-a_lr = 0.00006
-c_lr = 0.0006
+a_lr = 0.0001
+c_lr = 0.001
 rnd_lr = 0.00001
 burn_in_len = 5
 mem_size = 20000
@@ -139,7 +141,7 @@ class ReplayBuffer():
             
             b_len = state.size(0)
             
-            td_loss, state_mem = calc_td(self.models,state,action,reward,gamma,ireward,igamma,
+            td1,td2, state_mem = calc_td(self.models,state,action,reward,gamma,ireward,igamma,
                                model_state, 
                                b_len-n_step, stored_state=True)
         
@@ -149,7 +151,7 @@ class ReplayBuffer():
         self.count += data[0].size(0) if not count_episode else 1
         priority = []
         eta = 0.9
-        td_loss = td_loss.view(-1)
+        td_loss = (td1+td2).view(-1)
         for i in range(len(td_loss)-seq_len):
             p = (eta*td_loss[i:i+seq_len].max()+(1.-eta)*td_loss[i:i+seq_len].mean())**PER_alpha
             priority.append(p)
@@ -223,7 +225,7 @@ class ReplayBuffer():
 
 
 
-    def priority_update(self,epi_idx,seq_idx,loss):
+    def priority_update(self,epi_idx,seq_idx,td_loss):
         td_array = self.buffer[epi_idx][1]
         self.buffer[epi_idx][5] +=1
 
@@ -231,7 +233,7 @@ class ReplayBuffer():
 #        total_priority = self.buffer[epi_idx][3]
         
         for i in range(seq_len):
-            td_array[seq_idx+i] = loss[i].abs()
+            td_array[seq_idx+i] = td_loss[i].abs()
 #        for i in range(seq_len):
 #            priority[seq_idx+i] = loss[i]
         
@@ -294,7 +296,12 @@ class Critic(nn.Module):
 #                nn.Linear(128,128),nn.PReLU(),
 #                nn.Linear(128,num_outputs),
 #                )
-        self.value = nn.Sequential(
+        self.value1 = nn.Sequential(
+                nn.Linear(self.lstm_size,128),nn.PReLU(),
+                nn.Linear(128,128),nn.PReLU(),
+                nn.Linear(128,1),
+                )
+        self.value2 = nn.Sequential(
                 nn.Linear(self.lstm_size,128),nn.PReLU(),
                 nn.Linear(128,128),nn.PReLU(),
                 nn.Linear(128,1),
@@ -329,7 +336,8 @@ class Critic(nn.Module):
         x= self.hx
         
         #adv = self.advantage(x)
-        val = self.value(x)
+        val1 = self.value(x)
+        val2 = self.value(x)
         #iadv = self.iadvantage(x)
         ival = self.ivalue(x)
         
@@ -337,7 +345,7 @@ class Critic(nn.Module):
 #        iQ = ival + iadv - iadv.mean()
 #        Qa = Q.argmax(1).view(-1,1)
 #        iQa = iQ.argmax(1).view(-1,1)
-        return val,0,ival,0
+        return val1,val2,ival,0
 
     
     def set_state(self, hxcx ):
@@ -484,7 +492,8 @@ def calc_td(models,state, action, reward,gamma,ireward,igamma,model_state , stor
     y_t_hat = []
     iy_t_hat = []
     state_mem = []
-    losses = []
+    td1 = []
+    td2 = []
 #    with torch.no_grad():
     
     
@@ -513,12 +522,14 @@ def calc_td(models,state, action, reward,gamma,ireward,igamma,model_state , stor
     for i in range(story_len):
         _,act = models[0](state[i])
         _,tact = models[1](state[i+n_step])
-        qv,_,iqv,_ = models[2](state[i],action[i])
-        tqv,_,tiqv,_ = models[3](state[i+n_step],tact)
+        qv1,qv2,iqv,_ = models[2](state[i],action[i])
+        tqv1,tqv2,tiqv,_ = models[3](state[i+n_step],tact)
+        tqv = torch.min(tqv1,tqv2)
         #y_t_hat = reward[i] + (gamma[i+n_step]**n_step)*tqv.gather(1,tact.view(-1,1))
         y_t_hat = reward[i] + (gamma[i+n_step]**n_step)*tqv
         #losses.append ( qv.gather(1,action[i]) - y_t_hat.detach())
-        losses.append ( qv - y_t_hat.detach())
+        td1.append (( qv1 - y_t_hat.detach()).abs())
+        td2.append (( qv2 - y_t_hat.detach()).abs())
         
         
 #        if stored_state:
@@ -539,7 +550,7 @@ def calc_td(models,state, action, reward,gamma,ireward,igamma,model_state , stor
 #        itd = iq.gather(1,action[i]) - iy_t_hat[i]
 #        losses.append(td+itd)
     
-    return torch.cat(losses,1).abs(), state_mem
+    return torch.cat(td1,1),torch.cat(td2,1), state_mem
 
         
 
@@ -600,7 +611,7 @@ class actor_worker():
                         
                         
                     for i in range(n_step):
-                        local_mem.append([torch.zeros(state.size()).to(dev), torch.zeros(act_prob.size()).to(dev),0,0,0,0])
+                        local_mem.append([torch.zeros(state.size()), torch.zeros(act_prob.size()),0,0,0,0])
                         
         #            for i in range(len(local_mem)-n_step):
         #                local_mem[i][5] = 0.99 if local_mem[i][3]!=0 else 0 
@@ -674,20 +685,20 @@ class actor_worker():
     #            state_mem.append([mhx,mcx,thx,tcx])
     #            state_mem.append([mhx,mcx])
                 _, act_prob = self.actor(state)
-                Q,_,_,_ = self.critic(state,act_prob)
+                Q1,Q2,_,_ = self.critic(state,act_prob)
     #            _,_,_,_ = targetQ(state)
                 
-            r_act_prob = act_prob + self.random_prob.sample().to(dev)
-            action = r_act_prob.clamp(max=1,min=0).argmax()
+            r_act_prob = (act_prob.cpu() + self.random_prob.sample()).clamp(max=1,min=0)
+            action = r_act_prob.argmax()
             aprob_val.append(r_act_prob)
             a_val.append(action)
-            q_val.append(Q.detach())
+            q_val.append(torch.cat([Q1,Q2],1).detach())
             #qa_val.append(Q.gather(1,act.view(-1,1)).detach())
     #        if vis_render:
     #            vis.image(state.view(84,84),win = win_img)
                 
             next_state , reward, done ,_ = self.env.step(action.item())
-            local_mem.append([state, r_act_prob.detach() ,reward, gamma, 0 , 0])
+            local_mem.append([state.cpu(), r_act_prob.detach() ,reward, gamma, 0 , 0])
             #self.env.render()
             
             state = next_state
@@ -740,6 +751,8 @@ class learner_worker():
         
         
         self.replay_buffer = ReplayBuffer(mem_size,self.models,self.shared_state)
+        self.q_loss = 0
+        self.policy_loss = 0
 
 
     def soft_update(self,target_model, model, tau):
@@ -765,33 +778,29 @@ class learner_worker():
             print(repr(self.replay_buffer),end='\r')
             self.push_buffer(False)
     
-            loss, a_loss = self.update()
-            print(f'#learner  l:{loss:.5f}, pl:{a_loss:.5f}')
+            self.update(frame_idx)
+
+            print(f'#learner  l:{self.q_loss:.5f}, pl:{self.policy_loss:.5f}')
             with self.shared_state["vis"].get_lock():
-                self.win_l0 = vis.line(X=torch.tensor([frame_idx]),Y=torch.tensor([loss]),win=self.win_l0,update ='append')
-                self.win_l1 = vis.line(X=torch.tensor([frame_idx]),Y=torch.tensor([a_loss]),win=self.win_l1,update ='append')
+                self.win_l0 = vis.line(X=torch.tensor([frame_idx]),Y=torch.tensor([self.q_loss]),win=self.win_l0,update ='append')
+                self.win_l1 = vis.line(X=torch.tensor([frame_idx]),Y=torch.tensor([self.policy_loss]),win=self.win_l1,update ='append')
             
             with self.shared_state["wait"].get_lock():
                 self.shared_state["wait"].value +=10
             
                 
-            if frame_idx % 4 == 0:
-    #        if random.random() < 1/10 :
-                self.soft_update(self.models[1],self.models[0],0.3)
-                self.soft_update(self.models[3],self.models[2],0.3)
                 
 #                update_target(targetQ,mainQ)
             if frame_idx % 3 == 0:
     #        if random.random() < 1/20 :
-                self.shared_state["actor"].load_state_dict(self.models[1].state_dict())
-                self.shared_state["critic"].load_state_dict(self.models[3].state_dict())
+                self.shared_state["actor"].load_state_dict(self.models[0].state_dict())
+                self.shared_state["critic"].load_state_dict(self.models[2].state_dict())
                 for i in range(self.max_id):
                     self.shared_state["update"][i]=True
             if self.block == False:
                 return 0
-    def update(self):
+    def update(self,frame_idx):
         epi_idx,seq_idx,state, action, reward,gamma,ireward,igamma,hxcx, burn_state, burn_action = self.replay_buffer.sample(batch_size)
-        aloss = []
         burned_state = []
 #        [models[i].reset_state() for i in range(4)]
 #        model_state = [self.models[i].get_state() for i in range(4)]
@@ -816,44 +825,46 @@ class learner_worker():
         burned_state = torch.cat (burned_state,2)
         
         self.Cri_optimizer.zero_grad()
-        loss,_ = calc_td(self.models,state, action, reward,gamma,ireward,igamma,burned_state,seq_len) 
-        loss.pow(2).mean().backward()
+        td1,td2,_ = calc_td(self.models,state, action, reward,gamma,ireward,igamma,burned_state,seq_len) 
+        loss = td1.pow(2).mean()+td2.pow(2).mean()
+        loss.backward()
         self.Cri_optimizer.step()
-        
-        
-        
-        
-        
-        
-        [self.models[i].reset_state() for i in range(4)]
-        self.models[0].set_state(burned_state[0])
-        self.models[1].set_state(burned_state[1])
-        self.models[2].set_state(burned_state[2])
-        self.models[3].set_state(burned_state[3])
-        
-#        
-#        for i in range(seq_len):
-#            act,_ = self.models[0](state[i])
-#            qv,_,iqv,_ = self.models[2](state[i])
-#            aloss.append( qv.gather(1,act.view(-1,1)) )
-#        aloss = torch.cat(aloss,1)
-        self.Act_optimizer.zero_grad()
-        model_act = []
-        for i in range(seq_len):
-            _,act_prob = self.models[0](state[i])
-            model_act.append(act_prob)
-        model_val = []
-        for i in range(seq_len):
-            qv,_,iqv,_ = self.models[2](state[i],model_act[i])
-            model_val.append(qv)
+        self.q_loss = loss.item()
 
-        model_val = torch.stack(model_val,1)
-        policy_loss = -model_val.mean()
-        model_action_grad = torch.autograd.grad(policy_loss,model_act)
-        model_act = torch.stack(model_act,1)
-        model_act.backward(gradient = torch.stack(model_action_grad,1))
-        self.Act_optimizer.step()
         
+        
+        
+        if frame_idx % POLICY_FREQ ==0:
+            
+            [self.models[i].reset_state() for i in range(4)]
+            [self.models[i].set_state(burned_state[i]) for i in range(4)]
+            
+    #        
+    #        for i in range(seq_len):
+    #            act,_ = self.models[0](state[i])
+    #            qv,_,iqv,_ = self.models[2](state[i])
+    #            aloss.append( qv.gather(1,act.view(-1,1)) )
+    #        aloss = torch.cat(aloss,1)
+            self.Act_optimizer.zero_grad()
+            model_act = []
+            for i in range(seq_len):
+                _,act_prob = self.models[0](state[i])
+                model_act.append(act_prob)
+            model_val = []
+            for i in range(seq_len):
+                qv,_,iqv,_ = self.models[2](state[i],model_act[i])
+                model_val.append(qv)
+    
+            model_val = torch.stack(model_val,1)
+            policy_loss = -model_val.mean()
+            model_action_grad = torch.autograd.grad(policy_loss,model_act)
+            model_act = torch.stack(model_act,1)
+            model_act.backward(gradient = torch.stack(model_action_grad,1))
+            self.Act_optimizer.step()
+            
+            self.soft_update(self.models[1],self.models[0],SOFT_TAU)
+            self.soft_update(self.models[3],self.models[2],SOFT_TAU)
+            self.policy_loss = policy_loss.item()
 
             
         #            pm,tm = rnd_model(state,nstate)
@@ -863,10 +874,10 @@ class learner_worker():
         #            rnd_optimizer.step()
             
         for i in range(len(epi_idx)):
-            self.replay_buffer.priority_update(epi_idx[i],seq_idx[i],loss[i].detach())
+            self.replay_buffer.priority_update(epi_idx[i],seq_idx[i],(td1+td2).view(-1))
         self.replay_buffer.mem_remove(epi_idx)
 
-        return loss.pow(2).mean().item(),policy_loss.detach().item()
+        return 0,0
 
         
 #    #    if len(replay_buffer)==0:
@@ -910,20 +921,15 @@ if __name__ == '__main__':
     shared_state["wait"].value = start_frame*10
     
     
-    act = act_process(0,num_frames,shared_state,shared_queue,0.1,False)
+    act = actor_worker(0,num_frames,shared_state,shared_queue,0.1,False)
     act.run()
     act.run()
     act.run()
-    lea = lea_preocess(1,num_frames,shared_state,shared_queue,False)
+    lea = learner_worker(1,num_frames,shared_state,shared_queue,False)
     lea.push_buffer()
     lea.push_buffer()
     lea.push_buffer()
     
-    
-    
-    
-#    act.run()
-#    lea.push_buffer(False)
 #    for i in range(100):
 #        act.run()
 #        lea.run()
