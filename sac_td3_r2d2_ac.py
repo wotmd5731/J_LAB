@@ -9,6 +9,7 @@ import torch.nn.functional as F
 import visdom
 import time
 import os
+from torch.distributions import Normal
 
 vis = visdom.Visdom(port = 8097)
 import torch.multiprocessing as mp
@@ -38,7 +39,13 @@ MAX_ACCESS = 1000
 POLICY_FREQ = 2
 SOFT_TAU = 0.05
 COUNT_MIN = 1000
-
+V=0
+P=1
+Q=2
+TV=3
+TP=4
+TQ=5
+ALPHA=0.2
 
 max_shared_q_size = 5
 frame_stack = 1
@@ -53,6 +60,8 @@ vis_render=True
 EPS_CONST = 1
 a_lr = 0.0001
 c_lr = 0.001
+v_lr = 0.001
+
 rnd_lr = 0.00001
 burn_in_len = 5
 mem_size = 20000
@@ -141,7 +150,7 @@ class ReplayBuffer():
             
             b_len = state.size(0)
             
-            td1,td2, state_mem = calc_td(self.models,state,action,reward,gamma,ireward,igamma,
+            loss_q1,loss_q2,loss_value,loss_policy, state_mem = calc_td(self.models,state,action,reward,gamma,ireward,igamma,
                                model_state, 
                                b_len-n_step, stored_state=True)
         
@@ -151,7 +160,7 @@ class ReplayBuffer():
         self.count += data[0].size(0) if not count_episode else 1
         priority = []
         eta = 0.9
-        td_loss = (td1+td2).view(-1)
+        td_loss = (loss_q1.sqrt()+loss_q2.sqrt()+loss_value.sqrt()).view(-1)
         for i in range(len(td_loss)-seq_len):
             p = (eta*td_loss[i:i+seq_len].max()+(1.-eta)*td_loss[i:i+seq_len].mean())**PER_alpha
             priority.append(p)
@@ -233,7 +242,7 @@ class ReplayBuffer():
 #        total_priority = self.buffer[epi_idx][3]
         
         for i in range(seq_len):
-            td_array[seq_idx+i] = td_loss[i].abs()
+            td_array[seq_idx+i] = td_loss[i])
 #        for i in range(seq_len):
 #            priority[seq_idx+i] = loss[i]
         
@@ -265,9 +274,9 @@ class Flatten(nn.Module):
     def forward(self,inputs):
         return inputs.view(inputs.size(0),-1)
 
-class Critic(nn.Module):
+class QCritic(nn.Module):
     def __init__(self, num_inputs, num_action,  dev ):
-        super(Critic,self).__init__()
+        super(QCritic,self).__init__()
         if cnn_enable:
             size=7*7*64
             self.feature = nn.Sequential(
@@ -336,8 +345,8 @@ class Critic(nn.Module):
         x= self.hx
         
         #adv = self.advantage(x)
-        val1 = self.value(x)
-        val2 = self.value(x)
+        val1 = self.value1(x)
+        val2 = self.value2(x)
         #iadv = self.iadvantage(x)
         ival = self.ivalue(x)
         
@@ -346,6 +355,91 @@ class Critic(nn.Module):
 #        Qa = Q.argmax(1).view(-1,1)
 #        iQa = iQ.argmax(1).view(-1,1)
         return val1,val2,ival,0
+
+    
+    def set_state(self, hxcx ):
+        self.hx = hxcx[0]
+        self.cx = hxcx[1]
+    
+    def reset_state(self):
+        self.hx = None
+        self.cx = None
+
+    def get_state(self):
+        if self.hx is None:
+            return torch.stack([torch.zeros((1 ,self.lstm_size)).to(self.dev), torch.zeros((1 ,self.lstm_size)).to(self.dev)],0)
+        else:
+            return torch.stack([self.hx.detach(), self.cx.detach()],0)
+         
+class VCritic(nn.Module):
+    def __init__(self, num_inputs, num_action,  dev ):
+        super(VCritic,self).__init__()
+        if cnn_enable:
+            size=7*7*64
+            self.feature = nn.Sequential(
+                    nn.Conv2d(num_inputs,64,8,stride= 4),nn.PReLU(),
+                    nn.Conv2d(64,64,4,stride=2),nn.PReLU(),
+                    nn.Conv2d(64,64,3,stride=1),nn.PReLU(),
+                    Flatten(),
+                    nn.Linear(size,128),nn.PReLU(),
+                    )
+        else :
+            self.feature = nn.Sequential(
+                    nn.Linear(s_dim,128),nn.PReLU(),
+                    )
+
+        self.lstm_size = 128
+        self.lstm = nn.LSTMCell(self.lstm_size, self.lstm_size)
+        
+#        self.advantage = nn.Sequential(
+#                nn.Linear(self.lstm_size,128),nn.PReLU(),
+#                nn.Linear(128,128),nn.PReLU(),
+#                nn.Linear(128,num_outputs),
+#                )
+        self.value = nn.Sequential(
+                nn.Linear(self.lstm_size,128),nn.PReLU(),
+                nn.Linear(128,128),nn.PReLU(),
+                nn.Linear(128,1),
+                )
+#        self.iadvantage = nn.Sequential(
+#                nn.Linear(self.lstm_size,128),nn.PReLU(),
+#                nn.Linear(128,128),nn.PReLU(),
+#                nn.Linear(128,num_outputs),
+#                )
+        self.ivalue = nn.Sequential(
+                nn.Linear(self.lstm_size,128),nn.PReLU(),
+                nn.Linear(128,128),nn.PReLU(),
+                nn.Linear(128,1),
+                )
+        self.hx = None
+        self.cx = None
+
+        self.dev = dev
+        
+    def forward(self,x,a):
+#        aa = torch.ones(x.size())*a
+#        x = torch.cat([x,aa],dim=1)
+        x = self.feature(x)
+
+        
+        if self.hx is None: 
+            self.hx = torch.zeros((x.size(0) ,self.lstm_size)).to(self.dev)
+            self.cx = torch.zeros((x.size(0) ,self.lstm_size)).to(self.dev)
+            
+        self.hx, self.cx = self.lstm(x , (self.hx, self.cx))
+        
+        x= self.hx
+        
+        #adv = self.advantage(x)
+        val1 = self.value(x)
+        #iadv = self.iadvantage(x)
+        ival = self.ivalue(x)
+        
+#        Q = val + adv - adv.mean()
+#        iQ = ival + iadv - iadv.mean()
+#        Qa = Q.argmax(1).view(-1,1)
+#        iQa = iQ.argmax(1).view(-1,1)
+        return val1,ival
 
     
     def set_state(self, hxcx ):
@@ -384,36 +478,43 @@ class Actor(nn.Module):
         self.lstm_size = 128
         self.lstm = nn.LSTMCell(self.lstm_size, self.lstm_size)
         
-        self.net = nn.Sequential(
+        self.mean_net = nn.Sequential(
                 nn.Linear(self.lstm_size,128),nn.PReLU(),
                 nn.Linear(128,128),nn.PReLU(),
-                nn.Linear(128,num_outputs),nn.Sigmoid(),
+                nn.Linear(128,num_outputs)
                 )
-
+        self.log_std_net = nn.Sequential(
+                nn.Linear(self.lstm_size,128),nn.PReLU(),
+                nn.Linear(128,128),nn.PReLU(),
+                nn.Linear(128,num_outputs)
+                )
+        self.epsilon = 1e-6
         self.hx = None
         self.cx = None
 
         self.dev = dev
         
-    def forward(self,x):
+    def forward(self,x, eval=False):
         
         x = self.feature(x)
-        
+        log_prob = None
+
         if self.hx is None: 
             self.hx = torch.zeros((x.size(0) ,self.lstm_size)).to(self.dev)
             self.cx = torch.zeros((x.size(0) ,self.lstm_size)).to(self.dev)
             
         self.hx, self.cx = self.lstm(x , (self.hx, self.cx))
         
-        x= self.hx
-        
-        act_prob = self.net(x)
-        act = act_prob.argmax()
-
-#        m = Categorical(act_prob)
-#        act = m.sample()
-        
-        return  act,act_prob
+        mu = self.mean_net(self.hx)
+        log_std = self.log_std_net(self.hx).clamp(min=-20,max=2)
+        std = torch.exp(log_std)
+        normal = Normal(mu,std)
+        z = normal.rsample()
+        action = torch.tanh(z)
+        if eval:
+            log_prob = normal.log_prob(z) - torch.log(1-action.pow(2) + self.epsilon)
+            log_prob = log_prob.sum(-1,keepdim=True)
+        return action, log_prob, z, mu, log_std
 
     
     def set_state(self, hxcx ):
@@ -489,21 +590,13 @@ def update_target(tar,cur):
     tar.load_state_dict(cur.state_dict())
 
 def calc_td(models,state, action, reward,gamma,ireward,igamma,model_state , story_len, stored_state =False): 
-    y_t_hat = []
-    iy_t_hat = []
     state_mem = []
-    td1 = []
-    td2 = []
-#    with torch.no_grad():
-    
-    
-    
     if stored_state:
         [models[i].set_state(model_state[i]) for i in range(4)]
         state_mem.append([models[i].get_state() for i in range(4)])
         for i in range(story_len):
-            _,_ = models[0](state[i])
-            _,_ = models[1](state[i])
+            _,_ = models[V](state[i])
+            _,_,_,_,_ = models[P](state[i])
             _,_,_,_ = models[2](state[i],action[i])
             _,_,_,_ = models[3](state[i],action[i])
             state_mem.append([models[i].get_state() for i in range(4)])
