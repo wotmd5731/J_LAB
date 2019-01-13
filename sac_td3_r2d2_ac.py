@@ -597,53 +597,58 @@ def calc_td(models,state, action, reward,gamma,ireward,igamma,model_state , stor
         for i in range(story_len):
             _,_ = models[V](state[i])
             _,_,_,_,_ = models[P](state[i])
-            _,_,_,_ = models[2](state[i],action[i])
-            _,_,_,_ = models[3](state[i],action[i])
+            _,_,_,_ = models[Q](state[i],action[i])
+            _,_ = models[TV](state[i])
+
             state_mem.append([models[i].get_state() for i in range(4)])
     
 
     [models[i].set_state(model_state[i]) for i in range(4)]
-        
+    loss_q1=[]
+    loss_q2=[]
+    loss_value=[]
+    loss_policy=[]
+
     for i in range(n_step):
-        _,_ = models[1](state[i])
-        _,_,_,_ = models[3](state[i],action[i])
+        _,_ = models[TV](state[i])
         
         
 #        if stored_state:
 #            state_mem.append([models[i].get_state() for i in range(4)])
             
     for i in range(story_len):
-        _,act = models[0](state[i])
-        _,tact = models[1](state[i+n_step])
-        qv1,qv2,iqv,_ = models[2](state[i],action[i])
-        tqv1,tqv2,tiqv,_ = models[3](state[i+n_step],tact)
-        tqv = torch.min(tqv1,tqv2)
-        #y_t_hat = reward[i] + (gamma[i+n_step]**n_step)*tqv.gather(1,tact.view(-1,1))
-        y_t_hat = reward[i] + (gamma[i+n_step]**n_step)*tqv
-        #losses.append ( qv.gather(1,action[i]) - y_t_hat.detach())
-        td1.append (( qv1 - y_t_hat.detach()).abs())
-        td2.append (( qv2 - y_t_hat.detach()).abs())
-        
-        
-#        if stored_state:
-#            state_mem.append([models[i].get_state() for i in range(4)])
-                
-            
-#            y_t_hat.append()
-#            iy_t_hat.append(ireward[i] + (igamma[i+n_step]**n_step)*iqv.gather(1,tact.view(-1,1)))
+        policy_state = models[P].get_state()
+
+        exp_q1,exp_q2,_,_ = models[Q](state[i],action[i])
+        new_action, log_prob, z,mean,log_std = models[P](state[i],eval=True)
+        exp_v,_ = models[V](state[i])
+
+        tar_v,_ = models[TV](state[i+n_step])
+        next_q = reward[i] + ( gamma[i+n_step]**n_step)*tar_v
+        l_q1 = (next_q - exp_q1).pow(2)
+        l_q2 = (next_q - exp_q2).pow(2)
+        loss_q1.append(l_q1)
+        loss_q2.append(l_q2)
+
+        models[P].set_state(policy_state)
+        new_q1,new_q2,_,_ = models[Q](state[i],new_action)
+        new_exp_q = torch.min(new_q1,new_q2)
+
+        next_value = new_exp_q -(ALPHA *log_prob)
+        l_value = (next_value - exp_v).pow(2)
+        loss_value.append(l_value)
+
+        mean_loss = 0.001*mean.pow(2).mean(1)
+        std_loss = 0.001*log_std.pow(2).mean(1)
+        l_policy = ((ALPHA*log_prob) - new_exp_q).mean(1) + mean_loss + std_loss
+        loss_policy.append(l_policy)
     
-#    losses=[]
-#    
-#    [models[i].reset_state() for i in range(4)]
-#    [models[i].set_state(model_state[i]) for i in range(4)]
-#    
-#    for i in range(story_len):
-#        q,_,iq,_ = main_model(state[i])
-#        td = q.gather(1,action[i]) - y_t_hat[i]
-#        itd = iq.gather(1,action[i]) - iy_t_hat[i]
-#        losses.append(td+itd)
-    
-    return torch.cat(td1,1),torch.cat(td2,1), state_mem
+    loss_q1 = torch.stack(loss_q1,1)
+    loss_q1 = torch.stack(loss_q1,1)
+    loss_value = torch.stack(loss_value,1)
+    loss_policy = torch.stack(loss_policy,1).reshape(loss_q1.size())
+
+    return loss_q1,loss_q2,loss_value, loss_policy,state_mem
 
         
 
@@ -666,11 +671,13 @@ class actor_worker():
         self.win_exp_aprob = vis.line(Y=torch.tensor([0]),opts=dict(title='exp_aprob'+str(a_id)))
 
               
-        self.actor = Actor(s_dim, a_dim, dev ).to(dev)
-        self.critic = Critic(s_dim, a_dim, dev ).to(dev)
+        self.policy_net = Actor(s_dim, a_dim, dev ).to(dev)
+        self.q_net = QCritic(s_dim, a_dim, dev ).to(dev)
+        self.v_net = VCritic(s_dim, a_dim, dev ).to(dev)
         self.rnd_model  = RND(s_dim).to(dev)
-        self.actor.load_state_dict(self.shared_state["actor"].state_dict())
-        self.critic.load_state_dict(self.shared_state["critic"].state_dict())
+        self.policy_net.load_state_dict(self.shared_state["p"].state_dict())
+        self.q_net.load_state_dict(self.shared_state["q"].state_dict())
+        self.v_net.load_state_dict(self.shared_state["v"].state_dict())
 
         self.random_prob= torch.distributions.normal.Normal(torch.zeros([a_dim]),torch.ones([a_dim])*0.1)
 
@@ -680,7 +687,6 @@ class actor_worker():
 
         episode_reward=0
         local_mem = []
-        epsilon = 1
         done = True
         gamma = 0.997
         state = self.env.reset()
@@ -726,8 +732,8 @@ class actor_worker():
         #                ll.append(local_mem[i][4])
         #            win_ir = vis.line(Y=torch.tensor(ll),win= win_ir)
                     with torch.no_grad():
-                        self.actor.reset_state()
-                        self.critic.reset_state()
+                        self.policy_net.reset_state()
+                        self.q_net.reset_state()
     #                    targetQ.reset_state()
     #                    mhx,mcx= actor.get_state()
     #                    thx,tcx= targetQ.get_state()
@@ -754,8 +760,8 @@ class actor_worker():
                 episode_reward=0
                 gamma = 0.997
                 local_mem = []
-                self.actor.reset_state()
-                self.critic.reset_state()
+                self.policy_net.reset_state()
+                self.q_net.reset_state()
     #            targetQ.reset_state()
                 q_val = []
                 a_val = []
@@ -777,21 +783,20 @@ class actor_worker():
     #            thx,tcx = targetQ.get_state()
     #            state_mem.append([mhx,mcx,thx,tcx])
     #            state_mem.append([mhx,mcx])
-                _, act_prob = self.actor(state)
-                Q1,Q2,_,_ = self.critic(state,act_prob)
+                action, log_prob, z, mu,log_std  = self.policy_net(state)
+                Q1,Q2,_,_ = self.q_net(state,act_prob)
     #            _,_,_,_ = targetQ(state)
                 
-            r_act_prob = (act_prob.cpu() + self.random_prob.sample()).clamp(max=1,min=0)
-            action = r_act_prob.argmax()
-            aprob_val.append(r_act_prob)
-            a_val.append(action)
+            env_action = action.argmax()
+            aprob_val.append(action)
+            a_val.append(env_action)
             q_val.append(torch.cat([Q1,Q2],1).detach())
             #qa_val.append(Q.gather(1,act.view(-1,1)).detach())
     #        if vis_render:
     #            vis.image(state.view(84,84),win = win_img)
                 
-            next_state , reward, done ,_ = self.env.step(action.item())
-            local_mem.append([state.cpu(), r_act_prob.detach() ,reward, gamma, 0 , 0])
+            next_state , reward, done ,_ = self.env.step(env_action.item())
+            local_mem.append([state.cpu(),action.cpu() ,reward, gamma, 0 , 0])
             #self.env.render()
             
             state = next_state
@@ -799,8 +804,8 @@ class actor_worker():
         
         
             if self.shared_state["update"][self.a_id]:
-                self.actor.load_state_dict(self.shared_state["actor"].state_dict())
-                self.critic.load_state_dict(self.shared_state["critic"].state_dict())
+                self.policy_net.load_state_dict(self.shared_state["p"].state_dict())
+                self.q_net.load_state_dict(self.shared_state["q"].state_dict())
                 self.shared_state["update"][self.a_id]=False
                 
 #                print('actor_update',action.value[0].weight[0][0:5].detach())
@@ -820,32 +825,43 @@ class learner_worker():
         self.block = block
 
         self.win_ir = vis.line(Y=torch.tensor([0]),opts=dict(title='ireward'))
-        self.win_l0 = vis.line(Y=torch.tensor([0]),opts=dict(title='Q_loss'))
-        self.win_l1 = vis.line(Y=torch.tensor([0]),opts=dict(title='policy_loss'))
+        self.win_q1 = vis.line(Y=torch.tensor([0]),opts=dict(title='Q1_loss'))
+        self.win_q2 = vis.line(Y=torch.tensor([0]),opts=dict(title='Q2_loss'))
+        self.win_v = vis.line(Y=torch.tensor([0]),opts=dict(title='v_loss'))
+        self.win_p = vis.line(Y=torch.tensor([0]),opts=dict(title='policy_loss'))
         
-        self.actor = Actor(s_dim, a_dim, dev ).to(dev)
-        self.Tactor = Actor(s_dim, a_dim, dev ).to(dev)
-        self.critic = Critic(s_dim, a_dim, dev ).to(dev)
-        self.Tcritic = Critic(s_dim, a_dim, dev ).to(dev)
+        self.policy_net = Actor(s_dim, a_dim, dev ).to(dev)
+        self.t_policy_net = Actor(s_dim, a_dim, dev ).to(dev)
+        self.q_net = QCritic(s_dim, a_dim, dev ).to(dev)
+        self.t_q_net = QCritic(s_dim, a_dim, dev ).to(dev)
+        self.v_net = VCritic(s_dim, a_dim, dev ).to(dev)
+        self.t_v_net = VCritic(s_dim, a_dim, dev ).to(dev)
         
         
         self.rnd_model  = RND(s_dim).to(dev)
         
-        self.actor.load_state_dict(self.shared_state["actor"].state_dict())
-        self.Tactor.load_state_dict(self.shared_state["actor"].state_dict())
-        self.critic.load_state_dict(self.shared_state["critic"].state_dict())
-        self.Tcritic.load_state_dict(self.shared_state["critic"].state_dict())
+        self.policy_net.load_state_dict(self.shared_state["p"].state_dict())
+        self.t_policy_net.load_state_dict(self.shared_state["p"].state_dict())
+        self.q_net.load_state_dict(self.shared_state["q"].state_dict())
+        self.t_q_net.load_state_dict(self.shared_state["q"].state_dict())
+        self.v_net.load_state_dict(self.shared_state["v"].state_dict())
+        self.t_v_net.load_state_dict(self.shared_state["v"].state_dict())
     
-        self.models=[self.actor,self.Tactor, self.critic,self.Tcritic, self.rnd_model]
+        self.models=[self.v_net, self.policy_net,self.q_net,self.t_v_net,self.t_policy_net,self.t_q_net,self.rnd_model]
+
+
         
-        self.Act_optimizer = optim.Adam(self.actor.parameters(),a_lr)
-        self.Cri_optimizer = optim.Adam(self.critic.parameters(),c_lr)
+        self.p_optimizer = optim.Adam(self.policy_net.parameters(),a_lr)
+        self.q_optimizer = optim.Adam(self.q_net.parameters(),c_lr)
+        self.v_optimizer = optim.Adam(self.v_net.parameters(),v_lr)
         self.rnd_optimizer = optim.Adam(self.rnd_model.parameters(),rnd_lr)
         
         
         self.replay_buffer = ReplayBuffer(mem_size,self.models,self.shared_state)
-        self.q_loss = 0
-        self.policy_loss = 0
+        self.q1_loss = 0
+        self.q2_loss = 0
+        self.p_loss = 0
+        self.v_loss = 0
 
 
     def soft_update(self,target_model, model, tau):
@@ -872,11 +888,13 @@ class learner_worker():
             self.push_buffer(False)
     
             self.update(frame_idx)
+            print('#learner  q1:{:.5f} q2:{:.5f}, v:{:.5f}, p:{:5f}'.format(self.q1_loss,self.q2_loss,self.v_loss,self.p_loss))
 
-            print(f'#learner  l:{self.q_loss:.5f}, pl:{self.policy_loss:.5f}')
             with self.shared_state["vis"].get_lock():
-                self.win_l0 = vis.line(X=torch.tensor([frame_idx]),Y=torch.tensor([self.q_loss]),win=self.win_l0,update ='append')
-                self.win_l1 = vis.line(X=torch.tensor([frame_idx]),Y=torch.tensor([self.policy_loss]),win=self.win_l1,update ='append')
+                self.win_q1 = vis.line(X=torch.tensor([frame_idx]),Y=self.q1_loss.detach().view(1,-1),win=self.win_q1,update ='append')
+                self.win_q1 = vis.line(X=torch.tensor([frame_idx]),Y=self.q2_loss.detach().view(1,-1),win=self.win_q2,update ='append')
+                self.win_v = vis.line(X=torch.tensor([frame_idx]),Y=self.v_loss.detach().view(1,-1),win=self.win_v,update ='append')
+                self.win_p= vis.line(X=torch.tensor([frame_idx]),Y=self.p_loss.detach().view(1,-1),win=self.win_p,update ='append')
             
             with self.shared_state["wait"].get_lock():
                 self.shared_state["wait"].value +=10
@@ -886,8 +904,9 @@ class learner_worker():
 #                update_target(targetQ,mainQ)
             if frame_idx % 3 == 0:
     #        if random.random() < 1/20 :
-                self.shared_state["actor"].load_state_dict(self.models[0].state_dict())
-                self.shared_state["critic"].load_state_dict(self.models[2].state_dict())
+                self.shared_state["p"].load_state_dict(self.models[P].state_dict())
+                self.shared_state["q"].load_state_dict(self.models[Q].state_dict())
+                self.shared_state["v"].load_state_dict(self.models[V].state_dict())
                 for i in range(self.max_id):
                     self.shared_state["update"][i]=True
             if self.block == False:
@@ -901,74 +920,54 @@ class learner_worker():
         
         with torch.no_grad():
             for i in range(batch_size):
-                [self.models[i].reset_state() for i in range(4)]
+                [self.models[j].reset_state() for j in range(4)]
                 
                 [self.models[j].set_state(hxcx[i][2*j:2*j+2]) for j in range(4)]
                         
                 
                 for j in range(len(burn_state[i])):
-                    _,_ = self.models[0](burn_state[i][j])
-                    _,_ = self.models[1](burn_state[i][j])
-                    _,_,_,_ = self.models[2](burn_state[i][j],burn_action[i][j])
-                    _,_,_,_ = self.models[3](burn_state[i][j],burn_action[i][j])
+                    _ = self.models[V](burn_state[i][j])
+                    _,_,_,_,_ = self.models[P](burn_state[i][j])
+                    _,_,_,_ = self.models[Q](burn_state[i][j],burn_action[i][j])
+                    _ = self.models[TV](burn_state[i][j])
+
                 model_state = [self.models[i].get_state() for i in range(4)]
                 burned_state.append( torch.stack(model_state,0) )
                 
             
         burned_state = torch.cat (burned_state,2)
         
-        self.Cri_optimizer.zero_grad()
-        td1,td2,_ = calc_td(self.models,state, action, reward,gamma,ireward,igamma,burned_state,seq_len) 
-        loss = td1.pow(2).mean()+td2.pow(2).mean()
-        loss.backward()
-        self.Cri_optimizer.step()
-        self.q_loss = loss.item()
+        loss_q1,loss_q2,loss_v,loss_p,_ = calc_td(self.models,state,action,reward,gamma,ireward,igamma,burned_state,seq_len)
 
-        
-        
-        
-        if frame_idx % POLICY_FREQ ==0:
-            
-            [self.models[i].reset_state() for i in range(4)]
-            [self.models[i].set_state(burned_state[i]) for i in range(4)]
-            
-    #        
-    #        for i in range(seq_len):
-    #            act,_ = self.models[0](state[i])
-    #            qv,_,iqv,_ = self.models[2](state[i])
-    #            aloss.append( qv.gather(1,act.view(-1,1)) )
-    #        aloss = torch.cat(aloss,1)
-            self.Act_optimizer.zero_grad()
-            model_act = []
-            for i in range(seq_len):
-                _,act_prob = self.models[0](state[i])
-                model_act.append(act_prob)
-            model_val = []
-            for i in range(seq_len):
-                qv,_,iqv,_ = self.models[2](state[i],model_act[i])
-                model_val.append(qv)
-    
-            model_val = torch.stack(model_val,1)
-            policy_loss = -model_val.mean()
-            model_action_grad = torch.autograd.grad(policy_loss,model_act)
-            model_act = torch.stack(model_act,1)
-            model_act.backward(gradient = torch.stack(model_action_grad,1))
-            self.Act_optimizer.step()
-            
-            self.soft_update(self.models[1],self.models[0],SOFT_TAU)
-            self.soft_update(self.models[3],self.models[2],SOFT_TAU)
-            self.policy_loss = policy_loss.item()
+        self.q_optimizer.zero_grad()
+        self.q1_loss = self.loss_q1.mean()
+        self.q1_loss.backward(retain_graph=True)
+        self.q_optimizer.step()
 
-            
-        #            pm,tm = rnd_model(state,nstate)
-        #            rnd_loss = ((pm-tm)**2).mean()
-        #            rnd_optimizer.zero_grad()
-        #            rnd_loss.backward()
-        #            rnd_optimizer.step()
-            
-        for i in range(len(epi_idx)):
-            self.replay_buffer.priority_update(epi_idx[i],seq_idx[i],(td1+td2).view(-1))
-        self.replay_buffer.mem_remove(epi_idx)
+        self.q_optimizer.zero_grad()
+        self.q2_loss = self.loss_q2.mean()
+        self.q2_loss.backward(retain_graph=True)
+        self.q_optimizer.step()
+
+        self.v_optimizer.zero_grad()
+        self.v_loss = self.loss_v.mean()
+        self.v_loss.backward(retain_graph=True)
+        self.v_optimizer.step()
+        
+        self.p_optimizer.zero_grad()
+        self.p_loss = self.loss_p.mean()
+        self.p_loss.backward(retain_graph=True)
+        self.p_optimizer.step()
+
+        self.soft_update(self.models[TP],self.models[P],SOFT_TAU)
+        self.soft_update(self.models[TQ],self.models[Q],SOFT_TAU)
+        self.soft_update(self.models[TV],self.models[V],SOFT_TAU)
+        
+        with torch.no_grad():
+            td_loss = (loss_q1.sqrt() + loss.q2.sqrt() + loss_v.sqrt())
+            for i in range(len(epi_idx)):
+                self.replay_buffer.priority_update(epi_idx[i],seq_idx[i],td_loss[i])
+            self.replay_buffer.mem_remove(epi_idx)
 
         return 0,0
 
@@ -1004,8 +1003,9 @@ if __name__ == '__main__':
     shared_queue = mp.Queue()
     shared_state = dict()
     
-    shared_state["actor"] = Actor(s_dim, a_dim, dev ).share_memory()
-    shared_state["critic"] = Critic(s_dim, a_dim, dev ).share_memory()
+    shared_state["p"] = Actor(s_dim, a_dim, dev ).share_memory()
+    shared_state["q"] = QCritic(s_dim, a_dim, dev ).share_memory()
+    shared_state["v"] = VCritic(s_dim, a_dim, dev ).share_memory()
     
     shared_state["update"] = mp.Array('i', [0 for i in range(num_processes)])
 #    shared_state["wait"] = mp.Array('i', [0 for i in range(num_processes)])
