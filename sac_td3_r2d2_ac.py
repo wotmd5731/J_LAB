@@ -242,7 +242,7 @@ class ReplayBuffer():
 #        total_priority = self.buffer[epi_idx][3]
         
         for i in range(seq_len):
-            td_array[seq_idx+i] = td_loss[i])
+            td_array[seq_idx+i] = td_loss[i]
 #        for i in range(seq_len):
 #            priority[seq_idx+i] = loss[i]
         
@@ -416,7 +416,7 @@ class VCritic(nn.Module):
 
         self.dev = dev
         
-    def forward(self,x,a):
+    def forward(self,x):
 #        aa = torch.ones(x.size())*a
 #        x = torch.cat([x,aa],dim=1)
         x = self.feature(x)
