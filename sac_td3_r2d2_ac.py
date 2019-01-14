@@ -644,7 +644,7 @@ def calc_td(models,state, action, reward,gamma,ireward,igamma,model_state , stor
         loss_policy.append(l_policy)
     
     loss_q1 = torch.stack(loss_q1,1)
-    loss_q1 = torch.stack(loss_q1,1)
+    loss_q2 = torch.stack(loss_q2,1)
     loss_value = torch.stack(loss_value,1)
     loss_policy = torch.stack(loss_policy,1).reshape(loss_q1.size())
 
@@ -784,7 +784,7 @@ class actor_worker():
     #            state_mem.append([mhx,mcx,thx,tcx])
     #            state_mem.append([mhx,mcx])
                 action, log_prob, z, mu,log_std  = self.policy_net(state)
-                Q1,Q2,_,_ = self.q_net(state,act_prob)
+                Q1,Q2,_,_ = self.q_net(state,action)
     #            _,_,_,_ = targetQ(state)
                 
             env_action = action.argmax()
@@ -892,7 +892,7 @@ class learner_worker():
 
             with self.shared_state["vis"].get_lock():
                 self.win_q1 = vis.line(X=torch.tensor([frame_idx]),Y=self.q1_loss.detach().view(1,-1),win=self.win_q1,update ='append')
-                self.win_q1 = vis.line(X=torch.tensor([frame_idx]),Y=self.q2_loss.detach().view(1,-1),win=self.win_q2,update ='append')
+                self.win_q2 = vis.line(X=torch.tensor([frame_idx]),Y=self.q2_loss.detach().view(1,-1),win=self.win_q2,update ='append')
                 self.win_v = vis.line(X=torch.tensor([frame_idx]),Y=self.v_loss.detach().view(1,-1),win=self.win_v,update ='append')
                 self.win_p= vis.line(X=torch.tensor([frame_idx]),Y=self.p_loss.detach().view(1,-1),win=self.win_p,update ='append')
             
@@ -940,22 +940,22 @@ class learner_worker():
         loss_q1,loss_q2,loss_v,loss_p,_ = calc_td(self.models,state,action,reward,gamma,ireward,igamma,burned_state,seq_len)
 
         self.q_optimizer.zero_grad()
-        self.q1_loss = self.loss_q1.mean()
+        self.q1_loss = loss_q1.mean()
         self.q1_loss.backward(retain_graph=True)
         self.q_optimizer.step()
 
         self.q_optimizer.zero_grad()
-        self.q2_loss = self.loss_q2.mean()
+        self.q2_loss = loss_q2.mean()
         self.q2_loss.backward(retain_graph=True)
         self.q_optimizer.step()
 
         self.v_optimizer.zero_grad()
-        self.v_loss = self.loss_v.mean()
+        self.v_loss = loss_v.mean()
         self.v_loss.backward(retain_graph=True)
         self.v_optimizer.step()
         
         self.p_optimizer.zero_grad()
-        self.p_loss = self.loss_p.mean()
+        self.p_loss = loss_p.mean()
         self.p_loss.backward(retain_graph=True)
         self.p_optimizer.step()
 
@@ -964,7 +964,7 @@ class learner_worker():
         self.soft_update(self.models[TV],self.models[V],SOFT_TAU)
         
         with torch.no_grad():
-            td_loss = (loss_q1.sqrt() + loss.q2.sqrt() + loss_v.sqrt())
+            td_loss = (loss_q1.sqrt() + loss_q2.sqrt() + loss_v.sqrt())
             for i in range(len(epi_idx)):
                 self.replay_buffer.priority_update(epi_idx[i],seq_idx[i],td_loss[i])
             self.replay_buffer.mem_remove(epi_idx)
