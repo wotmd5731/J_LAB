@@ -425,7 +425,7 @@ class VCritic(nn.Module):
 
         self.dev = dev
         
-    def forward(self,xmu=0,sigma=1):
+    def forward(self,x,mu=0,sigma=1):
 #        aa = torch.ones(x.size())*a
 #        x = torch.cat([x,aa],dim=1)
         x = self.feature(x)
@@ -630,8 +630,8 @@ def calc_td(models,state, action, reward,gamma,ireward,igamma,model_state , stor
         next_exp_q  =torch.stack(next_exp_q,0)
     
     if popart_update:
-        new_mu = ((1-POPART_BETA)*mu +POPART_BETA*next_exp_q.eman()).detach().to(dev)
-        vt = ((1-POPART_BETA)*vt +POPART_BETA*next_exp_q.pow(2).eman()).detach().to(dev)
+        new_mu = ((1-POPART_BETA)*mu +POPART_BETA*next_exp_q.mean()).detach().to(dev)
+        vt = ((1-POPART_BETA)*vt +POPART_BETA*next_exp_q.pow(2).mean()).detach().to(dev)
         new_sigma = torch.sqrt(vt-mu**2).to(dev)
         models[V].last.weight.data = models[V].last.weight.data*sigma/new_sigma
         models[V].last.bias.data = (models[V].last.bias.data*sigma +mu-new_mu)/new_sigma
